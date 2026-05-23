@@ -182,7 +182,7 @@ async def _iter_one_retry_sleep(seconds: float) -> None:
 
 @dataclass
 class LoopConfig:
-    subject: str
+    subject: str | None = None
     iterations: int = 8
     candidates: int = 8
     no_control: bool = False
@@ -194,6 +194,7 @@ class LoopConfig:
     demo_mode: bool = False
     rpm: int | None = None
     max_retry_wait_s: float = 90.0
+    resume: Path | None = None
 
 
 def validate_subject(subject: str) -> str:
@@ -203,6 +204,39 @@ def validate_subject(subject: str) -> str:
         choices = ", ".join(sorted(CURATED_SUBJECTS))
         raise ValueError(f"subject {subject!r} not in curated list: {choices}")
     return normalized
+
+
+def _last_complete_iter(history: RunHistory, *, expects_control: bool) -> int:
+    """Highest ``iter_index`` whose recorded arms cover the configured set.
+
+    With ``expects_control=False`` a single ``evolving`` record satisfies an
+    iteration; with ``expects_control=True`` both ``evolving`` and ``control``
+    must be present. Returns ``0`` when no iteration qualifies — caller
+    interprets that as "start fresh in the existing run_dir".
+    """
+    expected: set[str] = {"evolving"}
+    if expects_control:
+        expected = {"evolving", "control"}
+    by_iter: dict[int, set[str]] = {}
+    for record in history.iterations:
+        by_iter.setdefault(record.iter_index, set()).add(record.arm)
+    complete = [idx for idx, arms in by_iter.items() if expected.issubset(arms)]
+    return max(complete) if complete else 0
+
+
+def _load_resume_state(resume_dir: Path) -> RunHistory:
+    """Load ``state.json`` for resume; raise ``ValueError`` on miss/corrupt.
+
+    ``main`` translates ``ValueError`` to rc=2 with a stderr banner, so the
+    operator gets the same exit code path as ``--subject dragon``.
+    """
+    state_path = resume_dir / "state.json"
+    if not state_path.exists():
+        raise ValueError(f"--resume: {state_path} does not exist")
+    try:
+        return RunHistory.load(state_path)
+    except Exception as exc:
+        raise ValueError(f"--resume: failed to load {state_path}: {exc}") from exc
 
 
 def _slug(value: str) -> str:
@@ -455,9 +489,57 @@ def _build_arm_tasks(
 
 async def run(config: LoopConfig, *, client: GeminiClient | None = None) -> RunHistory:
     """Run the full evolving + control loop. Returns a populated ``RunHistory``."""
-    subject = validate_subject(config.subject)
-    started_at = datetime.now(UTC)
-    run_dir = config.out_dir or _default_run_dir(subject, started_at)
+    if config.resume is not None:
+        history = _load_resume_state(config.resume)
+        subject = history.subject
+        if config.subject is not None and validate_subject(config.subject) != subject:
+            raise ValueError(
+                f"--resume subject mismatch: state.json has {subject!r}, "
+                f"--subject was {config.subject!r}"
+            )
+        started_at = history.started_at
+        run_dir = config.resume
+        n = _last_complete_iter(history, expects_control=not config.no_control)
+        history.iterations = [r for r in history.iterations if r.iter_index <= n]
+        start_iter = n + 1
+        if n >= 1:
+            evolving_record = next(
+                r for r in history.iterations
+                if r.iter_index == n and r.arm == "evolving"
+            )
+            evolving_prompt = evolving_record.system_prompt
+            _log.info(
+                "resume: continuing %s at iter %d (loaded %d complete iters from %s)",
+                subject, start_iter, n, run_dir,
+            )
+        else:
+            evolving_prompt = (
+                DEMO_PROMPTS[subject] if config.demo_mode else SEED_PROMPT
+            )
+            _log.info(
+                "resume: no complete iterations in %s; starting fresh at iter 1 in same run_dir",
+                run_dir,
+            )
+    else:
+        if config.subject is None:
+            raise ValueError("subject is required when --resume is not set")
+        subject = validate_subject(config.subject)
+        started_at = datetime.now(UTC)
+        run_dir = config.out_dir or _default_run_dir(subject, started_at)
+        history = RunHistory(
+            subject=subject,
+            started_at=started_at,
+            run_dir=run_dir,
+            seed_prompt=SEED_PROMPT,
+        )
+        evolving_prompt = DEMO_PROMPTS[subject] if config.demo_mode else SEED_PROMPT
+        start_iter = 1
+        if config.demo_mode:
+            _log.info(
+                "demo mode: evolving arm pre-warmed with rehearsed prompt for %r",
+                subject,
+            )
+
     run_dir.mkdir(parents=True, exist_ok=True)
 
     owns_client = client is None
@@ -466,20 +548,10 @@ async def run(config: LoopConfig, *, client: GeminiClient | None = None) -> RunH
             rpm=config.rpm, max_retry_wait_s=config.max_retry_wait_s
         )
 
-    history = RunHistory(
-        subject=subject,
-        started_at=started_at,
-        run_dir=run_dir,
-        seed_prompt=SEED_PROMPT,
-    )
-
-    evolving_prompt = DEMO_PROMPTS[subject] if config.demo_mode else SEED_PROMPT
     control_prompt = SEED_PROMPT
-    if config.demo_mode:
-        _log.info("demo mode: evolving arm pre-warmed with rehearsed prompt for %r", subject)
 
     try:
-        for iter_index in range(1, config.iterations + 1):
+        for iter_index in range(start_iter, config.iterations + 1):
             iter_dir = run_dir / f"iter-{iter_index:02d}"
             _log.info("iter %d/%d starting", iter_index, config.iterations)
 
@@ -560,7 +632,14 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         prog="volly",
         description="Self-improving ASCII art via system prompt learning.",
     )
-    parser.add_argument("--subject", required=True, help="curated subject (e.g. cat, tree, star)")
+    parser.add_argument(
+        "--subject",
+        default=None,
+        help=(
+            "curated subject (e.g. cat, tree, star); required unless --resume "
+            "is set, in which case the subject is loaded from state.json"
+        ),
+    )
     parser.add_argument("--iterations", type=int, default=8)
     parser.add_argument("--candidates", type=int, default=8)
     parser.add_argument(
@@ -596,6 +675,17 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         ),
     )
     parser.add_argument("--out", type=Path, default=None, help="override VOLLY_RUN_DIR")
+    parser.add_argument(
+        "--resume",
+        type=Path,
+        default=None,
+        help=(
+            "resume an existing run from <run-dir>; loads state.json, continues "
+            "at the iteration after the last fully-completed one, reuses the "
+            "run_dir (ignores --out and the subject from state.json wins). "
+            "See specs/02-loop.md §Resumable runs"
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -618,6 +708,7 @@ def main(argv: list[str] | None = None) -> int:
             demo_mode=args.demo,
             rpm=args.rpm,
             max_retry_wait_s=args.max_retry_wait,
+            resume=args.resume,
         )
         history = asyncio.run(run(config))
     except ValueError as exc:

@@ -345,6 +345,29 @@ volly/
   `rewriter degraded: <reason>; keeping prior prompt`. Tests construct
   `genai_errors.APIError(code=429, response_json={"error": {"message":
   "..."}})` directly; the bare-class case covers all subclasses.
+- `volly.loop --resume <run-dir>` (spec 02 §"Resumable runs") loads
+  `state.json` from the run-dir, computes the last fully-completed iter N via
+  `_last_complete_iter(history, expects_control=not config.no_control)`,
+  truncates any partial half from in-memory `history.iterations` (the
+  on-disk PNGs stay — they'll be overwritten on next save), restores
+  `evolving_prompt` from iter N's recorded `system_prompt`, and continues
+  at iter N+1 inside the SAME `run_dir` (no new timestamped child). When
+  N==0 (state.json present but no complete iters), behavior matches a fresh
+  run but reuses `run_dir`, including `demo_mode` pre-warming. Missing or
+  malformed `state.json` raises `ValueError` → `main` rc=2.
+  `--subject` becomes optional once `--resume` is set; if passed anyway it
+  must match state.json's subject (else `ValueError` → rc=2). Subject is
+  always loaded from state.json on resume (never from CLI). `--out` is
+  ignored on resume — the spec is explicit that the run_dir is the resume
+  argument. Edge: a partial iter N where evolving completed but rewriter
+  also already ran — the rewriter's output for N+1 was never persisted, so
+  resume re-uses iter N's prompt for iter N+1 (one rewriter step is "lost"
+  — acceptable per spec). Tests cover: 3-iter resume continuing to iter 4
+  with iter 3's prompt threading through, run_dir reuse (no timestamped
+  child added), partial-half discard + clean re-run of iter N, empty-
+  iterations resume = fresh iter 1, missing/malformed state.json →
+  ValueError, CLI `--subject` optional + mismatch detection, and
+  `_last_complete_iter` arm-set semantics in both modes.
 - `volly.gemini_client` **patient mode** keeps the loop alive through long
   quota windows (sponsorship-key hourly resets, free-tier daily resets at
   UTC midnight). Trigger: a single server-supplied `retryDelay` exceeds the

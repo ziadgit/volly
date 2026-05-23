@@ -729,3 +729,388 @@ async def test_run_demo_mode_off_uses_seed_for_both_arms(tmp_path: Path) -> None
     history = await loop.run(config, client=client)
     iter1_prompts = {r.system_prompt for r in history.iterations}
     assert iter1_prompts == {loop.SEED_PROMPT}
+
+
+# ---------------------------------------------------------------------------
+# --resume <run-dir>  (specs/02-loop.md §"Resumable runs")
+# ---------------------------------------------------------------------------
+
+
+async def _seed_resumable_run(
+    tmp_path: Path,
+    *,
+    iterations: int = 2,
+    candidates: int = 2,
+    no_control: bool = True,
+    subject: str = "cat",
+) -> Path:
+    """Run loop.run with a stub client to leave a real state.json on disk."""
+    n_judge = iterations if no_control else iterations * 2
+    client = _stub_client(
+        judge_results=[_judge_result(candidates, best=0) for _ in range(n_judge)],
+    )
+    config = loop.LoopConfig(
+        subject=subject,
+        iterations=iterations,
+        candidates=candidates,
+        no_control=no_control,
+        out_dir=tmp_path,
+    )
+    await loop.run(config, client=client)
+    return tmp_path
+
+
+async def test_resume_continues_from_last_completed_iter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A resume run starts at iter N+1 and uses iter N's evolving prompt."""
+    run_dir = await _seed_resumable_run(tmp_path, iterations=3, candidates=2)
+    pre = RunHistory.load(run_dir / "state.json")
+    assert len(pre.iterations) == 3
+    last_prompt = pre.iterations[-1].system_prompt
+    seen_iters: list[int] = []
+    seen_prompts: list[str] = []
+
+    async def stub_generate(client, system_prompt, subject, *, k, thinking, temperature=1.0):
+        seen_prompts.append(system_prompt)
+        return [Candidate(text=f"art-{i}", index=i, raw=f"raw-{i}") for i in range(k)]
+
+    monkeypatch.setattr(loop.actor, "generate", stub_generate)
+
+    async def stub_rank(client, subject, system_prompt, images, *, history=None, thinking):
+        seen_iters.append(len(images))
+        return _judge_result(len(images), best=0)
+
+    monkeypatch.setattr(loop.judge, "rank", stub_rank)
+
+    client = _stub_client(judge_results=[])
+    config = loop.LoopConfig(
+        iterations=5, candidates=2, no_control=True, resume=run_dir,
+    )
+    history = await loop.run(config, client=client)
+
+    iter_indices = sorted({r.iter_index for r in history.iterations})
+    assert iter_indices == [1, 2, 3, 4, 5]
+    # New runs only fired for iters 4 and 5 (one arm each = 2 generate calls)
+    assert len(seen_prompts) == 2
+    # The very first newly-dispatched call used iter 3's recorded prompt as input
+    assert seen_prompts[0] == last_prompt
+
+
+async def test_resume_reuses_existing_run_dir_no_timestamp_subdir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Resume must write into the same dir — no new ``YYYYMMDD-subject`` child."""
+    run_dir = await _seed_resumable_run(tmp_path, iterations=1, candidates=2)
+    children_before = sorted(p.name for p in run_dir.iterdir())
+
+    async def stub_generate(client, system_prompt, subject, *, k, thinking, temperature=1.0):
+        return [Candidate(text=f"x-{i}", index=i, raw="r") for i in range(k)]
+
+    async def stub_rank(client, subject, system_prompt, images, *, history=None, thinking):
+        return _judge_result(len(images), best=0)
+
+    monkeypatch.setattr(loop.actor, "generate", stub_generate)
+    monkeypatch.setattr(loop.judge, "rank", stub_rank)
+
+    client = _stub_client(judge_results=[])
+    config = loop.LoopConfig(
+        iterations=2, candidates=2, no_control=True, resume=run_dir,
+    )
+    history = await loop.run(config, client=client)
+
+    assert history.run_dir == run_dir
+    # iter-02 added next to iter-01 and state.json — no extra timestamped dirs
+    children_after = sorted(p.name for p in run_dir.iterdir())
+    new = set(children_after) - set(children_before)
+    assert new == {"iter-02"}
+
+
+async def test_resume_drops_partial_half_and_reruns_that_iter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If iter N has evolving but not control, resume re-runs iter N cleanly."""
+    # Build a state by hand: iter 1 complete (both arms), iter 2 evolving only.
+    from volly.state import IterationRecord
+
+    def _rec(iter_index: int, arm: str, prompt: str) -> IterationRecord:
+        return IterationRecord(
+            iter_index=iter_index,
+            arm=arm,  # type: ignore[arg-type]
+            system_prompt=prompt,
+            candidates=[Candidate(text="c", index=0, raw="r")],
+            judge=_judge_result(1, best=0),
+            best_image_path=tmp_path / f"iter-{iter_index:02d}" / arm / "best.png",
+            win_rate=0.5,
+        )
+
+    from datetime import UTC, datetime
+    pre = RunHistory(
+        subject="cat",
+        started_at=datetime.now(UTC),
+        run_dir=tmp_path,
+        seed_prompt=loop.SEED_PROMPT,
+        iterations=[
+            _rec(1, "evolving", loop.SEED_PROMPT),
+            _rec(1, "control", loop.SEED_PROMPT),
+            _rec(2, "evolving", "iter-2-prompt"),
+        ],
+    )
+    pre.save()
+
+    seen_iters: list[int] = []
+
+    async def stub_generate(client, system_prompt, subject, *, k, thinking, temperature=1.0):
+        return [Candidate(text=f"x-{i}", index=i, raw="r") for i in range(k)]
+
+    async def stub_rank(client, subject, system_prompt, images, *, history=None, thinking):
+        seen_iters.append(len(images))
+        return _judge_result(len(images), best=0)
+
+    monkeypatch.setattr(loop.actor, "generate", stub_generate)
+    monkeypatch.setattr(loop.judge, "rank", stub_rank)
+
+    client = _stub_client(judge_results=[])
+    config = loop.LoopConfig(
+        iterations=2, candidates=1, no_control=False, resume=tmp_path,
+    )
+    history = await loop.run(config, client=client)
+
+    # The partial iter-2 evolving record is dropped; the resumed loop re-runs iter 2
+    # as a fresh both-arms iteration. Then nothing more (iterations=2).
+    iter_indices = sorted(r.iter_index for r in history.iterations)
+    assert iter_indices == [1, 1, 2, 2]
+    # iter 2 evolving prompt should come from iter 1's evolving prompt (SEED), not "iter-2-prompt"
+    iter2_evolving = [r for r in history.iterations if r.iter_index == 2 and r.arm == "evolving"]
+    assert iter2_evolving[0].system_prompt == loop.SEED_PROMPT
+
+
+async def test_resume_empty_iterations_starts_at_iter_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A state.json with no iterations resumes as a fresh iter-1 in the same run_dir."""
+    from datetime import UTC, datetime
+    RunHistory(
+        subject="cat",
+        started_at=datetime.now(UTC),
+        run_dir=tmp_path,
+        seed_prompt=loop.SEED_PROMPT,
+        iterations=[],
+    ).save()
+
+    async def stub_generate(client, system_prompt, subject, *, k, thinking, temperature=1.0):
+        return [Candidate(text=f"x-{i}", index=i, raw="r") for i in range(k)]
+
+    async def stub_rank(client, subject, system_prompt, images, *, history=None, thinking):
+        return _judge_result(len(images), best=0)
+
+    monkeypatch.setattr(loop.actor, "generate", stub_generate)
+    monkeypatch.setattr(loop.judge, "rank", stub_rank)
+
+    client = _stub_client(judge_results=[])
+    config = loop.LoopConfig(
+        iterations=1, candidates=2, no_control=True, resume=tmp_path,
+    )
+    history = await loop.run(config, client=client)
+
+    assert len(history.iterations) == 1
+    assert history.iterations[0].iter_index == 1
+    assert history.iterations[0].system_prompt == loop.SEED_PROMPT
+
+
+def test_resume_missing_state_json_raises(tmp_path: Path) -> None:
+    config = loop.LoopConfig(
+        iterations=1, candidates=1, no_control=True, resume=tmp_path,
+    )
+    with pytest.raises(ValueError, match="does not exist"):
+        # main is sync; run is async — drive run synchronously via asyncio.run-equivalent.
+        import asyncio
+        asyncio.run(loop.run(config))
+
+
+def test_resume_malformed_state_json_raises(tmp_path: Path) -> None:
+    (tmp_path / "state.json").write_text("{not json")
+    config = loop.LoopConfig(
+        iterations=1, candidates=1, no_control=True, resume=tmp_path,
+    )
+    with pytest.raises(ValueError, match="failed to load"):
+        import asyncio
+        asyncio.run(loop.run(config))
+
+
+def test_parse_args_resume_defaults_none() -> None:
+    args = loop._parse_args(["--subject", "cat"])
+    assert args.resume is None
+    args = loop._parse_args(["--resume", "/tmp/foo"])
+    assert args.resume == Path("/tmp/foo")
+
+
+def test_parse_args_subject_not_required_when_resume() -> None:
+    """``--subject`` becomes optional once ``--resume`` is in play."""
+    args = loop._parse_args(["--resume", "/tmp/foo"])
+    assert args.subject is None
+    assert args.resume == Path("/tmp/foo")
+
+
+def test_main_help_lists_resume_flag(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit):
+        loop._parse_args(["--help"])
+    assert "--resume" in capsys.readouterr().out
+
+
+async def test_run_subject_required_when_no_resume() -> None:
+    """Without ``--resume`` and without a subject, run() raises ValueError."""
+    config = loop.LoopConfig(iterations=1, candidates=1, no_control=True)
+    with pytest.raises(ValueError, match="subject is required"):
+        await loop.run(config)
+
+
+async def test_resume_subject_mismatch_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An explicit ``--subject`` that contradicts state.json's subject errors out."""
+    await _seed_resumable_run(tmp_path, iterations=1, candidates=1, subject="cat")
+    config = loop.LoopConfig(
+        subject="tree",
+        iterations=1, candidates=1, no_control=True, resume=tmp_path,
+    )
+    with pytest.raises(ValueError, match="subject mismatch"):
+        await loop.run(config)
+
+
+def test_main_resume_without_subject_succeeds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`volly --resume <dir>` (no --subject) loads subject from state.json."""
+    # Seed a small run via the same stub path the other tests use.
+    seed_client = _stub_client(judge_results=[_judge_result(1, best=0)])
+    asyncio_run = __import__("asyncio").run
+    asyncio_run(
+        loop.run(
+            loop.LoopConfig(
+                subject="star", iterations=1, candidates=1,
+                no_control=True, out_dir=tmp_path,
+            ),
+            client=seed_client,
+        )
+    )
+
+    async def stub_generate(client, system_prompt, subject, *, k, thinking, temperature=1.0):
+        return [Candidate(text="x", index=0, raw="r")]
+
+    async def stub_rank(client, subject, system_prompt, images, *, history=None, thinking):
+        return _judge_result(len(images), best=0)
+
+    monkeypatch.setattr(loop.actor, "generate", stub_generate)
+    monkeypatch.setattr(loop.judge, "rank", stub_rank)
+
+    def fake_ctor(*args, **kwargs):
+        return _stub_client(judge_results=[])
+
+    monkeypatch.setattr("volly.loop.GeminiClient", fake_ctor)
+
+    rc = loop.main(
+        [
+            "--resume", str(tmp_path),
+            "--iterations", "2",
+            "--candidates", "1",
+            "--no-control",
+        ]
+    )
+
+    assert rc == 0
+    # The loaded subject from state.json carried through end-to-end.
+    state = RunHistory.load(tmp_path / "state.json")
+    assert state.subject == "star"
+    assert len(state.iterations) == 2
+
+
+def test_main_subject_mismatch_with_resume_returns_two(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``--subject foo --resume <cat-run>`` returns rc=2 with a helpful stderr."""
+    seed_client = _stub_client(judge_results=[_judge_result(1, best=0)])
+    import asyncio as _aio
+    _aio.run(
+        loop.run(
+            loop.LoopConfig(
+                subject="cat", iterations=1, candidates=1,
+                no_control=True, out_dir=tmp_path,
+            ),
+            client=seed_client,
+        )
+    )
+
+    def fake_ctor(*args, **kwargs):
+        return _stub_client(judge_results=[])
+
+    monkeypatch.setattr("volly.loop.GeminiClient", fake_ctor)
+
+    rc = loop.main(
+        [
+            "--subject", "tree",
+            "--resume", str(tmp_path),
+            "--iterations", "2",
+            "--candidates", "1",
+            "--no-control",
+        ]
+    )
+    assert rc == 2
+
+
+def test_last_complete_iter_no_control_only_evolving() -> None:
+    """With ``expects_control=False`` a lone evolving record satisfies the iter."""
+    from datetime import UTC, datetime
+
+    from volly.state import IterationRecord
+
+    def _rec(idx: int, arm: str) -> IterationRecord:
+        return IterationRecord(
+            iter_index=idx, arm=arm,  # type: ignore[arg-type]
+            system_prompt=loop.SEED_PROMPT,
+            candidates=[Candidate(text="c", index=0, raw="r")],
+            judge=_judge_result(1, best=0),
+            best_image_path=Path("ignored"),
+            win_rate=0.5,
+        )
+
+    hist = RunHistory(
+        subject="cat",
+        started_at=datetime.now(UTC),
+        run_dir=Path("/tmp"),
+        seed_prompt=loop.SEED_PROMPT,
+        iterations=[_rec(1, "evolving"), _rec(2, "evolving"), _rec(3, "evolving")],
+    )
+    assert loop._last_complete_iter(hist, expects_control=False) == 3
+    # With control expected, none of these qualify.
+    assert loop._last_complete_iter(hist, expects_control=True) == 0
+
+
+def test_last_complete_iter_both_arms_required() -> None:
+    """With control expected, an iter missing the control record drops out."""
+    from datetime import UTC, datetime
+
+    from volly.state import IterationRecord
+
+    def _rec(idx: int, arm: str) -> IterationRecord:
+        return IterationRecord(
+            iter_index=idx, arm=arm,  # type: ignore[arg-type]
+            system_prompt=loop.SEED_PROMPT,
+            candidates=[Candidate(text="c", index=0, raw="r")],
+            judge=_judge_result(1, best=0),
+            best_image_path=Path("ignored"),
+            win_rate=0.5,
+        )
+
+    hist = RunHistory(
+        subject="cat",
+        started_at=datetime.now(UTC),
+        run_dir=Path("/tmp"),
+        seed_prompt=loop.SEED_PROMPT,
+        iterations=[
+            _rec(1, "evolving"), _rec(1, "control"),
+            _rec(2, "evolving"), _rec(2, "control"),
+            _rec(3, "evolving"),  # control missing — partial
+        ],
+    )
+    assert loop._last_complete_iter(hist, expects_control=True) == 2
