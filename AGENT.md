@@ -134,6 +134,13 @@ volly/
   are padded from the prior iteration's best `Candidate` for that arm —
   iteration 1 with shortfall just records a shorter list. Judge history
   is per-arm and capped at the last 4 iterations.
+- Cross-module integration tests live under `tests/` (configured via
+  `testpaths = ["volly", "tests"]` in `pyproject.toml`); `tests/smoke_test.py`
+  drives `loop.main` in-process with a stubbed `GeminiClient` (patched as
+  `volly.loop.GeminiClient` since `main` constructs it inside `run`). No
+  network, no API key required — covers the full CLI → state.json →
+  printed best-image-path pipeline for both `--no-control` and the default
+  evolving+control configuration.
 - `volly.state.RunHistory.prompt_versions` returns the evolving-arm
   `system_prompt` for every evolving iteration in order, with no
   dedup — iteration N's prompt is what the rewriter produced from
