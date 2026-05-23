@@ -116,3 +116,11 @@ volly/
   in `judge.py` (not `state.py`) so the judge stays independent of state;
   `volly.state.RunHistory` will project its records into `HistoryEntry`
   when wired.
+- `volly.rewriter.rewrite` enforces the spec invariants post-hoc on
+  whatever the model returns: strips surrounding whitespace, injects the
+  "You are an ASCII artist." anchor when missing (logs INFO), hard-
+  truncates to 4000 chars (logs WARNING), and counts subject mentions
+  case-insensitively with word boundaries — a count over 2 logs a
+  WARNING but does NOT rewrite. Word-boundary regex means "cat" matches
+  "cat"/"Cat"/"CAT" but not "catalog", and multi-word subjects like
+  "coffee cup" work the same way.
