@@ -37,7 +37,7 @@ Format: `- [ ] P0/P1/P2 — <what> — spec: <path>`
 
 - [x] P1 — Add `"capybara"` to `CURATED_SUBJECTS` in `volly/loop.py` and to the curated list in `specs/00-overview.md`. Also add `"owl"` and `"mushroom"` — silhouettes that reward shaded ASCII. Update `volly/ui/app.py` selectbox source if it's not already pulling from `CURATED_SUBJECTS` — spec: specs/00-overview.md
 - [x] P1 — Add `DEMO_PROMPTS["capybara"]` (and `"owl"`, `"mushroom"`) entries — each ~10 lines, mentions the subject ≤2×, suggests a shaded character palette `(. , : ; - = + * # @)` for tonal range. These are the "rehearsed" prompts the operator uses with `--demo` for predictable on-stage output — spec: specs/00-overview.md §"Demo mode"
-- [ ] P1 — Upgrade the judge rubric in `volly/judge.py` to weight **shading depth / texture / level of detail / character variety** alongside the existing recognizability/composition/proportions/negative-space axes. Sum-of-axes still normalizes to [0, 1]. Update the judge system prompt to mention these explicitly so its critique vocabulary feeds the rewriter — spec: specs/06-judge.md
+- [x] P1 — Upgrade the judge rubric in `volly/judge.py` to weight **shading depth / texture / level of detail / character variety** alongside the existing recognizability/composition/proportions/negative-space axes. Sum-of-axes still normalizes to [0, 1]. Update the judge system prompt to mention these explicitly so its critique vocabulary feeds the rewriter — spec: specs/06-judge.md
 - [ ] P1 — Renderer: bump default `canvas=(1024, 768)` and lower `_MIN_FONT_SIZE` to 8 so the larger drawings the rewriter will start producing can actually fit. Update `renderer_test.py` overflow case to match the new defaults — spec: specs/05-renderer.md
 
 ## P2 — polish

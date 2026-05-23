@@ -427,3 +427,23 @@ volly/
   would silently bypass `GEMINI_RPM` env — keeping the no-tier path
   pass-through is the cleanest backward-compat story. `--tier paid`
   remains the explicit opt-in for the 900 RPM ceiling.
+- `volly.judge` system prompts (`_SYSTEM_TEMPLATE` for vision-mode and
+  `_SYSTEM_TEMPLATE_TEXT` for the `--ablate-judge` text-only path) score
+  six axes, "weighing equally", in the order spec 06 §"System prompt for
+  the judge" prescribes: recognizability, composition+proportions,
+  negative space, shading depth + tonal range (with the literal palette
+  `. , : ; - = + * # @`), level of detail (anatomy/texture/surface), and
+  character-set variety. The prompt also adds a closing rule: "Prefer
+  suggestions about technique (shading palette, anatomy landmarks,
+  proportion ratios) over subject-name repetition" — keeps the rewriter
+  from converging on "say the subject more times". Both templates carry
+  the identical axis list and palette string so vision-vs-text ablation
+  is a fair comparison; the text variant just swaps the lead-in line to
+  "raw ASCII text (no images attached)". When editing axes here, update
+  both templates in lockstep AND `specs/06-judge.md`; tests
+  `test_rank_system_prompt_carries_six_axis_rubric` and
+  `test_rank_text_mode_system_prompt_carries_six_axis_rubric` pin the
+  axis vocabulary in both system prompts. Spec's "priority order"
+  commentary ("recognizability is the gate; detail/shading is what
+  separates 0.6 from 0.9") is editorial — deliberately NOT in the prompt,
+  which says equal-weighting per the spec system-prompt text.
