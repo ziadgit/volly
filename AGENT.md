@@ -103,3 +103,8 @@ volly/
   `/System/Library/Fonts/Menlo.ttc` is the resolved font.
 - Pillow 14 deprecates `Image.Image.getdata`; renderer tests still use
   it (warns, doesn't fail). Tracked in fix_plan.md under P2.
+- `volly.actor.generate` returns a list whose length may be `< k` when
+  some `GeminiClient.text` calls raise — `return_exceptions=True` on
+  `asyncio.gather` swallows them by design. Each surviving `Candidate`
+  carries its original dispatch `index` (0..k-1), so an index gap means
+  that slot failed. The loop is expected to pad from prior best.
