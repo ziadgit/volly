@@ -42,9 +42,13 @@ async def rank(
     repeating prior advice. (Trim history to the last 4 iterations if
     context gets large — Flash 3.5's 1M window makes this easy.)
 - Returns JSON conforming to `JudgeResult` via `client.json(schema=...)`.
-- On `ValidationError` after retries, fall back to text-judge mode
-  (`prompt_suggestions=[]`, `scores=uniform`) and log the fallback. The
-  loop continues; we'd rather degrade than crash mid-demo.
+- On `ValidationError` after retries, fall back to **uniform fallback**
+  (`prompt_suggestions=[]`, `scores=uniform` — all 0.5) and log the
+  fallback. The loop continues; we'd rather degrade than crash mid-demo.
+  This is NOT the `--ablate-judge` text-judge mode (see "Ablation hook"
+  below) — a cascading text-judge call from the failure path could itself
+  429 and the synthesized uniform scores are safer for the live demo.
+  Same shape as the APIError-degradation path below.
 
 ## Graceful degradation on API failure
 

@@ -440,20 +440,26 @@ volly/
   default, `_MIN_FONT_SIZE`, the "down to Xpt" line in `render()`'s
   docstring, AND the overflow test in lockstep, and re-skim
   `specs/05-renderer.md` line 13/24 for the prescribed values.
-- **Judge-fallback terminology trap.** `volly/judge.py:_fallback_result`
-  (ValidationError path) and `_api_fallback_result` (APIError path) BOTH
-  synthesize uniform 0.5 scores — they do NOT invoke text-judge. Spec 02
-  §"Failure handling" and spec 06 §"Behavior" both contain the phrase
-  "text-judge mode" / "text-only judge" when describing this fallback,
-  but the parenthetical "scores=uniform" is what the code actually does
-  and what we want for demo robustness (a cascading text-judge fallback
-  could itself 429). The literal `--ablate-judge` text-judge path
-  (`rank(..., include_images=False, texts=[...])`) is a SEPARATE feature
-  for the ablation talking point — never invoked from the failure path.
-  If you ever try to "implement" the spec's literal text-judge fallback,
-  STOP — it's a spec wording bug tracked in `fix_plan.md` Discovered, not
-  a missing feature. The wording fix is to rewrite both spec lines to
-  say "uniform 0.5 fallback" instead of "text-judge mode".
+- **Judge-fallback = uniform 0.5; ablation = real text-judge.** Two
+  separately-reachable code paths share the word "text" in adjacent
+  history but are NOT the same thing. (1) The failure-handling path:
+  `volly/judge.py:_fallback_result` (catches `ValidationError`) and
+  `_api_fallback_result` (catches `APIError` / `ClientError` /
+  `ServerError`) both synthesize uniform 0.5 scores, `prompt_suggestions=
+  []`, distinct critique strings (`"judge degraded: <reason>"` vs.
+  `"judge degraded on APIError: <reason>"`) so operators can tell the two
+  failure modes apart in `state.json`. No model call. (2) The
+  `--ablate-judge` path: `rank(..., include_images=False, texts=[...])`
+  makes a real Gemini call with ASCII text instead of PNGs — a deliberate
+  experiment, never invoked from the failure handlers (a cascading
+  text-judge call from the failure path could itself 429 and crash the
+  live demo). Specs were rewritten 2026-05-23 to say "uniform fallback"
+  in both fallback descriptions (specs/02-loop.md §"Failure handling",
+  specs/06-judge.md §"Behavior") and cross-reference the ablation hook,
+  so the literal-text trap is gone — but the two-paths invariant is
+  load-bearing and the next loop to touch any of these four call sites
+  (two fallback helpers, ablation `rank()` mode, the loop's ablation
+  caller) needs to preserve it.
 - `volly.judge` system prompts (`_SYSTEM_TEMPLATE` for vision-mode and
   `_SYSTEM_TEMPLATE_TEXT` for the `--ablate-judge` text-only path) score
   six axes, "weighing equally", in the order spec 06 §"System prompt for

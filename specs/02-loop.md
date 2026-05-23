@@ -107,8 +107,11 @@ predictable timing matters more than saved tokens on stage.
 
 ## Failure handling
 
-- Judge returns malformed JSON twice in a row → fall back to text-only
-  judge for that iteration only, log the fallback, continue.
+- Judge returns malformed JSON twice in a row → fall back to **uniform
+  0.5 scores** for that iteration only, log the fallback, continue. This
+  is the same shape as the APIError-degradation path in spec 06; it does
+  NOT invoke the `--ablate-judge` text-judge mode (a cascading text-judge
+  call could itself 429 and crash the demo).
 - Actor produces fewer than `k` parseable candidates → pad with the prior
   iteration's best.
 - Any unhandled exception → still write `state.json` to disk so the UI can
