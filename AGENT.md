@@ -391,3 +391,23 @@ volly/
   `asyncio.sleep`. Heartbeat constant is `_PATIENT_HEARTBEAT_S=30.0`; a
   sleep that lands exactly on a chunk boundary (e.g. 30s, 60s) emits no
   trailing heartbeat because `remaining > 0` is the gate.
+- `volly.loop --tier {free,paid}` is the operational-mode preset bundle
+  from spec 02 §"Tier presets". Preset dict `_TIER_PRESETS` lives at
+  module top: `free` = `{rpm: 4, candidates: 3, no_control: True,
+  max_retry_wait_s: 3700.0}`, `paid` = `{rpm: 900, candidates: 8,
+  no_control: False, max_retry_wait_s: 90.0}`. Resolution lives in
+  `_resolve_loop_config(args)` (called from `main` after `_parse_args`):
+  explicit flags (anything non-None at the parser level) always win; if
+  `--tier` selects a preset, unset flags fall back to the preset value;
+  if `--tier` is omitted (`args.tier is None`), unset flags fall back to
+  the legacy raw defaults (rpm=None→env/30, candidates=8,
+  no_control=False, max_retry_wait_s=90.0) — preserving pre-tier
+  behavior and `GEMINI_RPM` env. The four tier-controlled flags
+  (`--candidates`, `--no-control`, `--rpm`, `--max-retry-wait`) all
+  parse to `None` when unset so the resolver can tell "unspecified" from
+  "explicitly set"; `--no-control` keeps `action="store_true"` so
+  passing it still yields `True` (just with `default=None`). Spec deviates
+  from fix_plan's "default preset is paid" claim because paid's rpm=900
+  would silently bypass `GEMINI_RPM` env — keeping the no-tier path
+  pass-through is the cleanest backward-compat story. `--tier paid`
+  remains the explicit opt-in for the 900 RPM ceiling.

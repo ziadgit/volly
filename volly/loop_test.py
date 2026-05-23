@@ -643,12 +643,17 @@ def test_main_passes_rpm_to_gemini_client(
     assert captured.get("rpm") == 5
 
 
-def test_parse_args_max_retry_wait_defaults_to_90() -> None:
-    """``--max-retry-wait`` defaults to 90s, matching ``GeminiClient`` default."""
+def test_parse_args_max_retry_wait_defaults_none_at_parser_level() -> None:
+    """``--max-retry-wait`` parses to None when unset so tier presets can fill it;
+    the effective 90.0 default is enforced inside ``_resolve_loop_config``."""
     args = loop._parse_args(["--subject", "cat"])
-    assert args.max_retry_wait == 90.0
+    assert args.max_retry_wait is None
     args = loop._parse_args(["--subject", "cat", "--max-retry-wait", "3700"])
     assert args.max_retry_wait == 3700.0
+    # Effective default — sentinel None resolves to 90.0 when --tier is omitted.
+    assert loop._resolve_loop_config(args).max_retry_wait_s == 3700.0
+    bare = loop._parse_args(["--subject", "cat"])
+    assert loop._resolve_loop_config(bare).max_retry_wait_s == 90.0
 
 
 def test_main_help_lists_max_retry_wait_flag(
@@ -1056,6 +1061,138 @@ def test_main_subject_mismatch_with_resume_returns_two(
         ]
     )
     assert rc == 2
+
+
+# ---------------------------------------------------------------------------
+# --tier {free,paid} preset bundles  (specs/02-loop.md §"Tier presets")
+# ---------------------------------------------------------------------------
+
+
+def test_tier_presets_match_spec_table() -> None:
+    """Spec 02 §"Tier presets" pins the exact preset values per tier."""
+    assert loop._TIER_PRESETS["free"] == {
+        "rpm": 4,
+        "candidates": 3,
+        "no_control": True,
+        "max_retry_wait_s": 3700.0,
+    }
+    assert loop._TIER_PRESETS["paid"] == {
+        "rpm": 900,
+        "candidates": 8,
+        "no_control": False,
+        "max_retry_wait_s": 90.0,
+    }
+
+
+def test_parse_args_tier_defaults_none() -> None:
+    """``--tier`` omitted → ``args.tier is None`` (no preset applied)."""
+    args = loop._parse_args(["--subject", "cat"])
+    assert args.tier is None
+    args = loop._parse_args(["--subject", "cat", "--tier", "free"])
+    assert args.tier == "free"
+    args = loop._parse_args(["--subject", "cat", "--tier", "paid"])
+    assert args.tier == "paid"
+
+
+def test_parse_args_tier_rejects_unknown_value(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """argparse rejects ``--tier dragon`` via ``choices=``."""
+    with pytest.raises(SystemExit):
+        loop._parse_args(["--subject", "cat", "--tier", "dragon"])
+
+
+def test_main_help_lists_tier_flag(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit):
+        loop._parse_args(["--help"])
+    out = capsys.readouterr().out
+    assert "--tier" in out
+    assert "free" in out
+    assert "paid" in out
+
+
+def test_resolve_loop_config_no_tier_preserves_existing_defaults() -> None:
+    """Omitting ``--tier`` is the legacy path — argparse defaults stand."""
+    args = loop._parse_args(["--subject", "cat"])
+    cfg = loop._resolve_loop_config(args)
+    assert cfg.candidates == 8
+    assert cfg.no_control is False
+    assert cfg.rpm is None
+    assert cfg.max_retry_wait_s == 90.0
+
+
+def test_resolve_loop_config_tier_free_applies_all_preset_values() -> None:
+    args = loop._parse_args(["--subject", "cat", "--tier", "free"])
+    cfg = loop._resolve_loop_config(args)
+    assert cfg.candidates == 3
+    assert cfg.no_control is True
+    assert cfg.rpm == 4
+    assert cfg.max_retry_wait_s == 3700.0
+
+
+def test_resolve_loop_config_tier_paid_applies_all_preset_values() -> None:
+    args = loop._parse_args(["--subject", "cat", "--tier", "paid"])
+    cfg = loop._resolve_loop_config(args)
+    assert cfg.candidates == 8
+    assert cfg.no_control is False
+    assert cfg.rpm == 900
+    assert cfg.max_retry_wait_s == 90.0
+
+
+def test_resolve_loop_config_explicit_flag_overrides_tier_preset() -> None:
+    """``--tier free --candidates 5`` keeps candidates=5; spec demands this."""
+    args = loop._parse_args(
+        [
+            "--subject", "cat",
+            "--tier", "free",
+            "--candidates", "5",
+            "--rpm", "20",
+            "--max-retry-wait", "200",
+        ]
+    )
+    cfg = loop._resolve_loop_config(args)
+    assert cfg.candidates == 5
+    assert cfg.rpm == 20
+    assert cfg.max_retry_wait_s == 200.0
+    # Untouched preset values still apply.
+    assert cfg.no_control is True
+
+
+def test_resolve_loop_config_no_control_overrides_paid_preset() -> None:
+    """``--tier paid --no-control`` flips no_control off the preset's False."""
+    args = loop._parse_args(
+        ["--subject", "cat", "--tier", "paid", "--no-control"]
+    )
+    cfg = loop._resolve_loop_config(args)
+    assert cfg.no_control is True
+    # Other preset values still apply.
+    assert cfg.rpm == 900
+
+
+def test_main_tier_free_threads_preset_to_gemini_client(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """End-to-end: ``--tier free`` reaches the auto-constructed GeminiClient."""
+    captured: dict[str, object] = {}
+
+    def fake_ctor(*args, **kwargs):
+        captured.update(kwargs)
+        return _stub_client(judge_results=[_judge_result(3, best=0)])
+
+    monkeypatch.setattr("volly.loop.GeminiClient", fake_ctor)
+
+    rc = loop.main(
+        [
+            "--subject", "cat",
+            "--iterations", "1",
+            "--tier", "free",
+            "--out", str(tmp_path),
+        ]
+    )
+
+    assert rc == 0
+    assert captured.get("rpm") == 4
+    assert captured.get("max_retry_wait_s") == 3700.0
 
 
 def test_last_complete_iter_no_control_only_evolving() -> None:

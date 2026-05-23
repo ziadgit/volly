@@ -154,6 +154,25 @@ _log = logging.getLogger(__name__)
 
 _JUDGE_HISTORY_LIMIT = 4
 
+# Tier preset bundles (specs/02-loop.md §"Tier presets"). Selected via
+# ``--tier {free,paid}``; explicit flags override individual preset values.
+# When ``--tier`` is omitted, no preset is applied and raw argparse defaults
+# stand (rpm=None→env/30, candidates=8, no_control=False, max_retry_wait=90).
+_TIER_PRESETS: dict[str, dict[str, object]] = {
+    "free": {
+        "rpm": 4,
+        "candidates": 3,
+        "no_control": True,
+        "max_retry_wait_s": 3700.0,
+    },
+    "paid": {
+        "rpm": 900,
+        "candidates": 8,
+        "no_control": False,
+        "max_retry_wait_s": 90.0,
+    },
+}
+
 # Iteration-1 wedge handling (specs/02-loop.md §"Iteration-1 wedge handling").
 # Iter 1 has no prior best to pad from, so a zero-candidate arm cannot be
 # repaired locally — only a fresh attempt helps. Sleep between retries is a
@@ -641,11 +660,17 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         ),
     )
     parser.add_argument("--iterations", type=int, default=8)
-    parser.add_argument("--candidates", type=int, default=8)
+    parser.add_argument(
+        "--candidates",
+        type=int,
+        default=None,
+        help="candidates per iteration (default 8 unless overridden by --tier preset)",
+    )
     parser.add_argument(
         "--no-control",
         action="store_true",
-        help="skip the static-control arm to halve API spend",
+        default=None,
+        help="skip the static-control arm to halve API spend (default off unless --tier free)",
     )
     parser.add_argument(
         "--ablate-judge",
@@ -666,12 +691,23 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument(
         "--max-retry-wait",
         type=float,
-        default=90.0,
+        default=None,
         help=(
             "per-call cap (seconds) on honoring server retryDelay; above the "
             "cap the client enters patient mode (warn + heartbeat sleep + "
             "retry, no crash). Default 90; set ~3700 to wait through an hourly "
             "quota reset"
+        ),
+    )
+    parser.add_argument(
+        "--tier",
+        choices=sorted(_TIER_PRESETS.keys()),
+        default=None,
+        help=(
+            "operational preset bundle: 'free' = rpm=4 candidates=3 --no-control "
+            "max-retry-wait=3700 (sponsorship / no-billing); 'paid' = rpm=900 "
+            "candidates=8 with control max-retry-wait=90 (Tier 1+). Omit to keep "
+            "argparse defaults. Explicit flags override individual preset values"
         ),
     )
     parser.add_argument("--out", type=Path, default=None, help="override VOLLY_RUN_DIR")
@@ -689,6 +725,37 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _resolve_loop_config(args: argparse.Namespace) -> LoopConfig:
+    """Build a ``LoopConfig`` from argparse ``args``, applying ``--tier`` preset.
+
+    Resolution rule (spec 02 §"Tier presets"): explicit flags (non-None at the
+    parser level) win. If ``--tier`` selects a preset, unset flags fall back to
+    the preset value. If ``--tier`` is omitted, unset flags fall back to the
+    raw argparse default — preserving the pre-tier-preset behavior bit-for-bit.
+    """
+    preset = _TIER_PRESETS.get(args.tier) if args.tier else None
+
+    def pick(flag_value: object, preset_key: str, raw_default: object) -> object:
+        if flag_value is not None:
+            return flag_value
+        if preset is not None:
+            return preset[preset_key]
+        return raw_default
+
+    return LoopConfig(
+        subject=args.subject,
+        iterations=args.iterations,
+        candidates=pick(args.candidates, "candidates", 8),  # type: ignore[arg-type]
+        no_control=pick(args.no_control, "no_control", False),  # type: ignore[arg-type]
+        out_dir=args.out,
+        ablate_judge=args.ablate_judge,
+        demo_mode=args.demo,
+        rpm=pick(args.rpm, "rpm", None),  # type: ignore[arg-type]
+        max_retry_wait_s=pick(args.max_retry_wait, "max_retry_wait_s", 90.0),  # type: ignore[arg-type]
+        resume=args.resume,
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
 
@@ -698,18 +765,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     try:
-        config = LoopConfig(
-            subject=args.subject,
-            iterations=args.iterations,
-            candidates=args.candidates,
-            no_control=args.no_control,
-            out_dir=args.out,
-            ablate_judge=args.ablate_judge,
-            demo_mode=args.demo,
-            rpm=args.rpm,
-            max_retry_wait_s=args.max_retry_wait,
-            resume=args.resume,
-        )
+        config = _resolve_loop_config(args)
         history = asyncio.run(run(config))
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)

@@ -126,9 +126,12 @@ Explicit flags override the preset (e.g. `--tier free --candidates 4`).
 | `--no-control`       | True (skip control arm to halve API cost) | False                         |
 | `--max-retry-wait`   | 3700 (wait through hourly reset)          | 90                            |
 
-Default when `--tier` is omitted is **`paid`** — matches existing CLI
-defaults so unchanged invocations keep working. Operators in
-sponsorship/free-tier scenarios add `--tier free` once.
+When `--tier` is omitted, **no preset is applied** — raw argparse defaults
+stand (`rpm=None` → `GEMINI_RPM` env or 30, `candidates=8`, `no_control=False`,
+`max-retry-wait=90`). Unchanged invocations keep working bit-for-bit and a
+shell-level `GEMINI_RPM` still wins. Operators on sponsorship/free-tier
+scenarios add `--tier free` once; operators on Tier 1+ can pass `--tier paid`
+to opt into the higher 900 RPM ceiling.
 
 ## Resumable runs
 
