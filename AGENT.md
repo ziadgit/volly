@@ -495,3 +495,16 @@ volly/
   exactly can override: `--tier free --rpm 5`. Loop_test
   `test_main_passes_rpm_to_gemini_client` uses `--rpm 5` as a plumbing
   fixture — unrelated to the recommendation.
+- `GeminiClient.{text,multimodal,json}` all accept `temperature: float =
+  1.0` as a keyword-only arg, threaded through `_build_config` and onto
+  `GenerateContentConfig.temperature`. No caller in `volly/` passes it
+  explicitly today — actor/judge/rewriter all take the default 1.0 —
+  but the kwarg is part of the spec'd public surface (specs/03-gemini-
+  client.md §"Public surface") so a future caller (e.g. a deterministic-
+  ablation flag wanting `temperature=0.0`) can opt in without touching
+  the client. When adding such a caller, plumb the value all the way down
+  to `_build_config` — do NOT introduce a parallel `temperature` arg
+  somewhere else. Spec 03 documented the kwarg on `text()` from day one
+  but originally omitted it from `multimodal()` and `json()`; the omission
+  was fixed 2026-05-23 against the already-implemented code (no
+  behavioral change).

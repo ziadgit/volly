@@ -39,6 +39,7 @@ class GeminiClient:
         images: list[PIL.Image.Image],
         *,
         thinking: Thinking = Thinking.HIGH,
+        temperature: float = 1.0,
     ) -> str: ...
 
     async def json[T: BaseModel](
@@ -49,6 +50,7 @@ class GeminiClient:
         *,
         images: list[PIL.Image.Image] | None = None,
         thinking: Thinking = Thinking.HIGH,
+        temperature: float = 1.0,
         max_retries: int = 2,
     ) -> T: ...
 ```
