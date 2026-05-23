@@ -17,6 +17,8 @@ from volly.actor import Candidate
 from volly.judge import CandidateScore, JudgeResult
 from volly.state import IterationRecord, RunHistory, win_rate
 from volly.ui.app import (
+    ARM_COLORS,
+    _winrate_chart,
     latest_run_dir,
     load_history,
     run_root,
@@ -138,7 +140,7 @@ def test_load_history_roundtrips_saved_run(tmp_path: Path) -> None:
 
 
 def test_winrate_chart_data_empty_history(tmp_path: Path) -> None:
-    assert winrate_chart_data(_history(tmp_path)) == {}
+    assert winrate_chart_data(_history(tmp_path)) == []
 
 
 def test_winrate_chart_data_evolving_only(tmp_path: Path) -> None:
@@ -147,8 +149,11 @@ def test_winrate_chart_data_evolving_only(tmp_path: Path) -> None:
     history.add(_record(iter_index=2, arm="evolving", prompt="p2", scores=[0.7], run_dir=tmp_path))
 
     data = winrate_chart_data(history)
-    assert set(data) == {"evolving"}
-    assert data["evolving"] == [pytest.approx(0.4), pytest.approx(0.7)]
+    assert {r["arm"] for r in data} == {"evolving"}
+    assert [(r["iteration"], r["win_rate"]) for r in data] == [
+        (1, pytest.approx(0.4)),
+        (2, pytest.approx(0.7)),
+    ]
 
 
 def test_winrate_chart_data_both_arms_equal_length(tmp_path: Path) -> None:
@@ -159,17 +164,71 @@ def test_winrate_chart_data_both_arms_equal_length(tmp_path: Path) -> None:
     history.add(_record(iter_index=2, arm="control", prompt="seed", scores=[0.25], run_dir=tmp_path))
 
     data = winrate_chart_data(history)
-    assert set(data) == {"evolving", "control"}
-    assert len(data["evolving"]) == len(data["control"]) == 2
+    evolving = [r for r in data if r["arm"] == "evolving"]
+    control = [r for r in data if r["arm"] == "control"]
+    assert [r["win_rate"] for r in evolving] == [pytest.approx(0.4), pytest.approx(0.7)]
+    assert [r["win_rate"] for r in control] == [pytest.approx(0.2), pytest.approx(0.25)]
+    assert [r["iteration"] for r in evolving] == [1, 2]
+    assert [r["iteration"] for r in control] == [1, 2]
 
 
-def test_winrate_chart_data_pads_shorter_arm_with_none(tmp_path: Path) -> None:
+def test_winrate_chart_data_ragged_arms_no_padding(tmp_path: Path) -> None:
+    """Altair handles ragged series natively, so the long-form output skips
+    iterations where an arm has no data rather than padding with None."""
     history = _history(tmp_path)
     history.add(_record(iter_index=1, arm="evolving", prompt="p1", scores=[0.4], run_dir=tmp_path))
     history.add(_record(iter_index=1, arm="control", prompt="seed", scores=[0.2], run_dir=tmp_path))
     history.add(_record(iter_index=2, arm="evolving", prompt="p2", scores=[0.7], run_dir=tmp_path))
-    # Control arm stops at iter 1, evolving continues to iter 2.
+    # Control arm has no iter 2 — should appear in evolving series only.
 
     data = winrate_chart_data(history)
-    assert data["evolving"] == [pytest.approx(0.4), pytest.approx(0.7)]
-    assert data["control"] == [pytest.approx(0.2), None]
+    evolving = [r for r in data if r["arm"] == "evolving"]
+    control = [r for r in data if r["arm"] == "control"]
+    assert [r["iteration"] for r in evolving] == [1, 2]
+    assert [r["iteration"] for r in control] == [1]
+    assert all(r["win_rate"] is not None for r in data)
+
+
+def test_winrate_chart_data_omits_iterations_without_evolving_arm(tmp_path: Path) -> None:
+    """If only the control arm has run (degenerate but possible in tests), the
+    evolving series is simply absent — no zero-padding, no missing-key crash."""
+    history = _history(tmp_path)
+    history.add(_record(iter_index=1, arm="control", prompt="seed", scores=[0.2], run_dir=tmp_path))
+    data = winrate_chart_data(history)
+    assert {r["arm"] for r in data} == {"control"}
+
+
+def test_winrate_chart_y_axis_bounded_to_unit_interval(tmp_path: Path) -> None:
+    history = _history(tmp_path)
+    history.add(_record(iter_index=1, arm="evolving", prompt="p1", scores=[0.4], run_dir=tmp_path))
+    history.add(_record(iter_index=1, arm="control", prompt="seed", scores=[0.2], run_dir=tmp_path))
+
+    chart = _winrate_chart(winrate_chart_data(history))
+    spec = chart.to_dict()
+    y_scale = spec["encoding"]["y"]["scale"]
+    assert y_scale["domain"] == [0.0, 1.0]
+    # ``clamp`` keeps a runaway 1.05 from blowing out the axis on the demo.
+    assert y_scale["clamp"] is True
+
+
+def test_winrate_chart_uses_explicit_arm_colors(tmp_path: Path) -> None:
+    history = _history(tmp_path)
+    history.add(_record(iter_index=1, arm="evolving", prompt="p1", scores=[0.4], run_dir=tmp_path))
+    history.add(_record(iter_index=1, arm="control", prompt="seed", scores=[0.2], run_dir=tmp_path))
+
+    chart = _winrate_chart(winrate_chart_data(history))
+    color_scale = chart.to_dict()["encoding"]["color"]["scale"]
+    assert color_scale["domain"] == ["evolving", "control"]
+    assert color_scale["range"] == [ARM_COLORS["evolving"], ARM_COLORS["control"]]
+
+
+def test_winrate_chart_color_scale_omits_missing_arm(tmp_path: Path) -> None:
+    """On --no-control runs the legend should not show a phantom control entry."""
+    history = _history(tmp_path)
+    history.add(_record(iter_index=1, arm="evolving", prompt="p1", scores=[0.4], run_dir=tmp_path))
+    history.add(_record(iter_index=2, arm="evolving", prompt="p2", scores=[0.7], run_dir=tmp_path))
+
+    chart = _winrate_chart(winrate_chart_data(history))
+    color_scale = chart.to_dict()["encoding"]["color"]["scale"]
+    assert color_scale["domain"] == ["evolving"]
+    assert color_scale["range"] == [ARM_COLORS["evolving"]]

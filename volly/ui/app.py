@@ -13,6 +13,7 @@ import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 
+import altair as alt
 import streamlit as st
 
 from volly.loop import CURATED_SUBJECTS, LoopConfig
@@ -21,6 +22,11 @@ from volly.state import RunHistory
 
 POLL_SECONDS = 1.0
 SUBJECTS: tuple[str, ...] = tuple(sorted(CURATED_SUBJECTS))
+
+# Evolving = the system learning (green, foreground). Control = the frozen
+# baseline (gray, recedes). Matches specs/09-control.md: the demo lives or
+# dies on whether the audience reads the two curves at a glance.
+ARM_COLORS: dict[str, str] = {"evolving": "#16a34a", "control": "#9ca3af"}
 
 
 def run_root() -> Path:
@@ -49,25 +55,53 @@ def load_history(run_dir: Path) -> RunHistory | None:
         return None
 
 
-def winrate_chart_data(history: RunHistory) -> dict[str, list[float | None]]:
-    """Pad evolving + control win-rate series to the same length for ``st.line_chart``.
+def winrate_chart_data(history: RunHistory) -> list[dict[str, float | int | str]]:
+    """Long-form win-rate records per (arm, iteration), suitable for altair.
 
-    Returns an empty dict when neither arm has recorded any iteration so the
-    caller can show a "waiting" placeholder instead of an empty chart.
+    Returns ``[]`` when no iteration has been recorded so the caller can show
+    a "waiting" placeholder instead of an empty chart. Iterations are 1-based
+    to match how ``RunHistory`` indexes them; arms with no data are simply
+    absent from the output (no padding — altair handles ragged series).
     """
-    evolving = history.win_rates("evolving")
-    control = history.win_rates("control")
-    n = max(len(evolving), len(control))
+    records: list[dict[str, float | int | str]] = []
+    for arm in ("evolving", "control"):
+        for i, w in enumerate(history.win_rates(arm), start=1):
+            records.append({"iteration": i, "arm": arm, "win_rate": w})
+    return records
 
-    def pad(xs: list[float]) -> list[float | None]:
-        return list(xs) + [None] * (n - len(xs))
 
-    out: dict[str, list[float | None]] = {}
-    if evolving:
-        out["evolving"] = pad(evolving)
-    if control:
-        out["control"] = pad(control)
-    return out
+def _winrate_chart(data: list[dict[str, float | int | str]]) -> alt.Chart:
+    """Altair line chart with bounded y-axis [0, 1] and explicit arm colors.
+
+    Y-axis bounds are non-negotiable: an autoscaled chart makes a flat 0.18–0.22
+    control noise band look like big swings, which destroys the demo's
+    "evolving climbs, control stays flat" story. Spec: ``specs/09-control.md``.
+    """
+    arms_present = [arm for arm in ARM_COLORS if any(r["arm"] == arm for r in data)]
+    color_scale = alt.Scale(
+        domain=arms_present,
+        range=[ARM_COLORS[a] for a in arms_present],
+    )
+    return (
+        alt.Chart(alt.Data(values=data))
+        .mark_line(point=True, strokeWidth=3)
+        .encode(
+            x=alt.X(
+                "iteration:Q",
+                axis=alt.Axis(title="iteration", tickMinStep=1, format="d"),
+            ),
+            y=alt.Y(
+                "win_rate:Q",
+                scale=alt.Scale(domain=[0.0, 1.0], clamp=True),
+                axis=alt.Axis(title="win rate", format=".1f"),
+            ),
+            color=alt.Color(
+                "arm:N",
+                scale=color_scale,
+                legend=alt.Legend(title="arm"),
+            ),
+        )
+    )
 
 
 @st.cache_resource
@@ -155,7 +189,7 @@ def _render_winrate_panel(history: RunHistory) -> None:
     if not data:
         st.info("Waiting for the first iteration…")
         return
-    st.line_chart(data)
+    st.altair_chart(_winrate_chart(data), use_container_width=True)
 
 
 def _render_critique_panel(history: RunHistory) -> None:

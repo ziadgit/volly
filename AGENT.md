@@ -159,6 +159,19 @@ volly/
   (caller shows "waiting"), omits the `"control"` key entirely on
   `--no-control` runs, and pads the shorter arm with `None` so
   `st.line_chart` accepts the dict.
+- `volly.ui.app` Panel 3 (win-rate) uses `st.altair_chart`, not
+  `st.line_chart` — Streamlit 1.57's `st.line_chart` has no `y_min`/
+  `y_max`, and spec 10-ui requires y-axis [0, 1] so a flat control noise
+  band visually reads flat. `winrate_chart_data` returns LONG-form
+  records `[{iteration, arm, win_rate}, ...]` (not the prior wide-form
+  dict — altair handles ragged series natively, so no `None` padding is
+  needed). `_winrate_chart` builds the spec with explicit `ARM_COLORS`
+  (evolving #16a34a green, control #9ca3af gray) so the demo's
+  "learning vs. baseline" story is legible without a legend lookup; the
+  color-scale domain is filtered to arms actually present, so a
+  `--no-control` run shows no phantom legend entry. `altair` and
+  `pandas` are not in `pyproject.toml` — they ship as transitive deps
+  of `streamlit`.
 - `volly.state.RunHistory.prompt_versions` returns the evolving-arm
   `system_prompt` for every evolving iteration in order, with no
   dedup — iteration N's prompt is what the rewriter produced from
