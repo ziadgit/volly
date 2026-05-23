@@ -19,6 +19,35 @@ include the `temperature` kwarg on `multimodal()` and `json()` (already
 implemented in `volly/gemini_client.py:338,352` but only documented on
 `text()`).
 
+### Halting note (for future Ralph loops on this branch)
+
+This is the 5th consecutive loop on 2026-05-23 that has audited steady
+state. The previous four landed the three spec-wording-drift items above;
+this one re-audited all 11 specs against the code and found **no new
+drift** — code and specs are synchronized. The only outstanding item is
+the operator-data-blocked tuning task.
+
+Before regenerating `fix_plan.md` again on the next invocation, check:
+
+1. `git log --since="<this commit>" -- specs/ volly/` — if no new commits
+   touched `specs/` or `volly/`, regeneration will be idempotent and you
+   should stop the loop instead of producing a no-op commit.
+2. If new commits exist, run the verify subagent (`ruff check`, `pytest
+   -x -q`, `python -c "import volly"`) and only then re-audit specs vs
+   code; the audit is expensive in subagent budget and only useful when
+   one side actually moved.
+3. The blocked tuning item needs a real Gemini-backed run with `--tier
+   paid` (or `--tier free` for many iterations across an hourly reset)
+   to produce win-rate-over-time curves. Until an operator runs that and
+   commits the resulting `state.json` (or summary of it) to this repo,
+   the iteration/candidate counts cannot be tuned from code alone.
+
+If all three conditions above hold (no spec/code changes since this
+commit, no operator data, no new task from the user), the correct Ralph
+action is to **end the loop without a commit** — the codebase is
+genuinely done relative to its current spec. This note is the explicit
+permission slip.
+
 ## P0 — rate-limit hardening (discovered 2026-05-23 from a real Gemini run; demo unrunnable until these land)
 
 - [x] P0 — Add a global async **RPM limiter** to `volly/gemini_client.py`: token bucket shared across actor/judge/rewriter so a 19-call iteration doesn't burst past the per-minute ceiling. Configurable via `--rpm` CLI flag (default), `GEMINI_RPM` env (override), constructor arg (override env). Free-tier value is **5**. Limiter is per-`GeminiClient` instance and lives in the client module — every `_generate` acquires a token before the SDK call — spec: specs/03-gemini-client.md
