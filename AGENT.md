@@ -77,3 +77,9 @@ volly/
 ## Gotchas
 
 <!-- Ralph: append discoveries here, oldest at top. Never rewrite. -->
+- The project venv lives at `.venv/` (created via `uv venv`). Use
+  `.venv/bin/ruff`, `.venv/bin/pytest`, `.venv/bin/python` from the project
+  root — no `source` needed. `uv pip install -e ".[dev]"` is the bootstrap.
+- `pytest -x -q` returns exit code 5 (no tests collected) until the first
+  `*_test.py` lands. Treat 5 as a pass during the scaffold-era loops; once
+  any test file exists, 5 means real breakage.

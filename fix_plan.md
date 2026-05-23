@@ -6,7 +6,7 @@ Format: `- [ ] P0/P1/P2 — <what> — spec: <path>`
 
 ## P0 — bootstrap
 
-- [ ] P0 — Scaffold `pyproject.toml` with deps (google-generativeai, Pillow, streamlit, pytest, ruff, anyio) and the `volly` package skeleton (`volly/__init__.py`) — spec: specs/01-stack.md
+- [x] P0 — Scaffold `pyproject.toml` with deps (google-generativeai, Pillow, streamlit, pytest, ruff, anyio) and the `volly` package skeleton (`volly/__init__.py`) — spec: specs/01-stack.md
 - [ ] P0 — Implement `volly/gemini_client.py` — async wrapper for Gemini Flash 3.5 with thinking-level control (Low/Medium/High), JSON-mode helper, multimodal helper — spec: specs/03-gemini-client.md
 - [ ] P0 — Implement `volly/renderer.py` — ASCII text → PNG via PIL, fixed canvas, monospace font, black-on-white — spec: specs/05-renderer.md
 - [ ] P0 — Implement `volly/actor.py` — generate N candidates in parallel via `asyncio.gather` at Low thinking — spec: specs/04-actor.md
@@ -32,3 +32,4 @@ Format: `- [ ] P0/P1/P2 — <what> — spec: <path>`
 ## Discovered
 
 <!-- Ralph appends here -->
+- [ ] P2 — `volly` script entrypoint in `pyproject.toml` points at `volly.loop:main`; `loop.py` must expose a synchronous `main()` callable (calls `asyncio.run`) — spec: specs/02-loop.md
