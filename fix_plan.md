@@ -20,7 +20,7 @@ Format: `- [ ] P0/P1/P2 — <what> — spec: <path>`
 
 - [x] P1 — Implement `volly/ui/app.py` Streamlit dashboard with the four panels (evolving prompt + diffs, current best, win-rate chart, judge reasoning) — spec: specs/10-ui.md
 - [x] P1 — Wire the static control arm into the UI chart so evolving vs. flat is visually obvious — spec: specs/09-control.md
-- [ ] P1 — Subject sanitizer / curated list (cat, house, fish, coffee cup, smiley, sailboat, tree, heart, star) — spec: specs/00-overview.md
+- [x] P1 — Subject sanitizer / curated list (cat, house, fish, coffee cup, smiley, sailboat, tree, heart, star) — spec: specs/00-overview.md
 
 ## P2 — polish
 
