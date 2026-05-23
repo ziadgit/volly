@@ -52,7 +52,18 @@ def test_seed_prompt_matches_spec() -> None:
 
 def test_curated_subjects_match_overview_list() -> None:
     assert loop.CURATED_SUBJECTS == frozenset(
-        {"cat", "house", "fish", "coffee cup", "smiley", "sailboat", "tree", "heart", "star"}
+        {
+            "cat",
+            "house",
+            "fish",
+            "coffee cup",
+            "smiley",
+            "sailboat",
+            "tree",
+            "heart",
+            "star",
+            "capybara",
+        }
     )
 
 
@@ -421,6 +432,48 @@ async def test_run_demo_mode_pre_warms_evolving_keeps_control_on_seed(
     control_dir = tmp_path / "iter-01" / "control"
     assert (evolving_dir / "prompt.txt").read_text() == loop.DEMO_PROMPTS["coffee cup"]
     assert (control_dir / "prompt.txt").read_text() == loop.SEED_PROMPT
+
+
+def test_parse_args_rpm_defaults_none() -> None:
+    """``--rpm`` unset → ``None`` so the client falls back to env/30."""
+    args = loop._parse_args(["--subject", "cat"])
+    assert args.rpm is None
+    args = loop._parse_args(["--subject", "cat", "--rpm", "5"])
+    assert args.rpm == 5
+
+
+def test_main_help_lists_rpm_flag(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit):
+        loop._parse_args(["--help"])
+    assert "--rpm" in capsys.readouterr().out
+
+
+def test_main_passes_rpm_to_gemini_client(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``--rpm 5`` reaches the auto-constructed ``GeminiClient`` ctor."""
+    captured: dict[str, object] = {}
+
+    def fake_ctor(*args, **kwargs):
+        captured.update(kwargs)
+        client = _stub_client(judge_results=[_judge_result(1, best=0)])
+        return client
+
+    monkeypatch.setattr("volly.loop.GeminiClient", fake_ctor)
+
+    rc = loop.main(
+        [
+            "--subject", "cat",
+            "--iterations", "1",
+            "--candidates", "1",
+            "--no-control",
+            "--rpm", "5",
+            "--out", str(tmp_path),
+        ]
+    )
+
+    assert rc == 0
+    assert captured.get("rpm") == 5
 
 
 async def test_run_demo_mode_off_uses_seed_for_both_arms(tmp_path: Path) -> None:

@@ -21,8 +21,12 @@
 
 - Beating SOTA ASCII art generators (irrelevant — improvement curve is the point).
 - Arbitrary subjects. A curated/sanitized list — cat, house, fish, coffee
-  cup, smiley, sailboat, tree, heart, star. Faces and complex scenes
-  are out of scope.
+  cup, smiley, sailboat, tree, heart, star, **capybara, owl, mushroom**.
+  Faces and complex scenes are out of scope. The animal subjects
+  (cat / capybara / owl / fish) are deliberately included to exercise the
+  detail/shading axis of the judge rubric (spec 06); silhouettes are
+  legible at the renderer's default canvas while still rewarding
+  multi-character tonal shading.
 - Persistent learning across runs. Each subject restarts from the seed prompt.
   (Could be added later; not for the demo.)
 - Multi-model comparisons. Pure Flash-3.5 story.
@@ -54,6 +58,30 @@ two-arm comparison stays meaningful — control shows what a flat seed
 prompt produces, and evolving shows how a known-good starting point
 behaves against it. Use this when you need a predictable demo, not the
 "true zero" pitch.
+
+## Rate-limit constraints (operator-visible)
+
+Gemini 3.5 Flash free tier is **5 requests / minute / model**. One iteration
+of the default config bursts ~19 calls (16 actor + 2 judge + 1 rewriter).
+That is fundamentally incompatible with free tier unless throttled. We
+handle this *inside the loop*, not by changing the demo shape:
+
+- `volly/gemini_client.py` owns a global token-bucket **RPM limiter**
+  (spec 03 §"Rate limiting"). All `_generate` calls acquire a token first;
+  bursting actors are queued, not refused.
+- `--rpm` CLI flag and `GEMINI_RPM` env override the default. Default is
+  **30** (suits a paid tier without surprises); free-tier operators set
+  `--rpm 5`.
+- On a 429 the client honors Gemini's `RetryInfo.retryDelay` (typically
+  44–60s) instead of guessing — see spec 03.
+
+Operator playbook:
+
+- **Paid tier** (any positive-RPS plan; what hackathon sponsors usually
+  hand out): keep defaults, iterations finish in ~10 s each.
+- **Free tier**: pass `--rpm 5`. Each iteration takes ~4 minutes; do not
+  attempt a live demo on free tier — pre-record and replay via the UI's
+  read-only mode (see spec 10).
 
 ## Pitch (60 seconds)
 

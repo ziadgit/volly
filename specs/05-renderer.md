@@ -10,12 +10,18 @@ text**.
 def render(
     ascii_text: str,
     *,
-    canvas: tuple[int, int] = (640, 640),  # pixels
+    canvas: tuple[int, int] = (1024, 768),  # pixels
     font_size: int = 14,
     bg: str = "white",
     fg: str = "black",
 ) -> PIL.Image.Image: ...
 ```
+
+Canvas default is **1024×768** (was 640×640): with the judge rubric now
+weighting detail/shading (spec 06), the rewriter will push the actor
+toward larger, denser drawings. The earlier 640² canvas was forcing the
+overflow downscaler to clip detail off ~30-line outputs. `_MIN_FONT_SIZE`
+drops to **8** (was 6 effective) so the largest legible output still fits.
 
 ## Behavior
 

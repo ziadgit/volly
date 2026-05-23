@@ -47,7 +47,7 @@ def _stub_client_factory(judge_results: list[JudgeResult]):
     that constructor.
     """
 
-    def _build() -> GeminiClient:
+    def _build(*_args, **_kwargs) -> GeminiClient:
         client = MagicMock(spec=GeminiClient)
 
         async def text_router(system, user, *, thinking=Thinking.LOW, temperature=1.0):

@@ -11,7 +11,7 @@ from google.genai import errors as genai_errors
 from google.genai import types
 from pydantic import BaseModel, ValidationError
 
-from volly.gemini_client import GeminiClient, Thinking
+from volly.gemini_client import GeminiClient, Thinking, _resolve_rpm, _RpmLimiter
 
 
 class _Schema(BaseModel):
@@ -19,10 +19,16 @@ class _Schema(BaseModel):
     score: float
 
 
-def _make_client() -> GeminiClient:
+@pytest.fixture(autouse=True)
+def _clean_rpm_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Isolate every test from a developer's ``GEMINI_RPM`` env setting."""
+    monkeypatch.delenv("GEMINI_RPM", raising=False)
+
+
+def _make_client(rpm: int | None = None) -> GeminiClient:
     with patch("volly.gemini_client.genai.Client") as ctor:
         ctor.return_value = MagicMock()
-        return GeminiClient(api_key="test-key")
+        return GeminiClient(api_key="test-key", rpm=rpm)
 
 
 def _response(*, text: str = "", parsed: Any = None) -> MagicMock:
@@ -181,3 +187,154 @@ async def test_generate_raises_after_max_transport_attempts(
         await client.text("sys", "hi")
 
     assert mock.await_count == 3
+
+
+# --- RPM resolution -------------------------------------------------------
+
+
+def test_resolve_rpm_default() -> None:
+    assert _resolve_rpm(None) == 30
+
+
+def test_resolve_rpm_reads_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GEMINI_RPM", "5")
+    assert _resolve_rpm(None) == 5
+
+
+def test_resolve_rpm_arg_overrides_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GEMINI_RPM", "5")
+    assert _resolve_rpm(900) == 900
+
+
+def test_resolve_rpm_empty_env_falls_back(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GEMINI_RPM", "")
+    assert _resolve_rpm(None) == 30
+
+
+def test_resolve_rpm_invalid_env_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GEMINI_RPM", "fast")
+    with pytest.raises(ValueError, match="GEMINI_RPM"):
+        _resolve_rpm(None)
+
+
+def test_resolve_rpm_nonpositive_env_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GEMINI_RPM", "0")
+    with pytest.raises(ValueError, match="positive"):
+        _resolve_rpm(None)
+
+
+def test_resolve_rpm_nonpositive_arg_raises() -> None:
+    with pytest.raises(ValueError, match="positive"):
+        _resolve_rpm(-1)
+
+
+def test_client_init_exposes_rpm() -> None:
+    client = _make_client(rpm=7)
+    assert client.rpm == 7
+
+
+def test_client_init_picks_env_rpm(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GEMINI_RPM", "5")
+    assert _make_client().rpm == 5
+
+
+def test_client_init_defaults_to_30() -> None:
+    assert _make_client().rpm == 30
+
+
+# --- RPM limiter mechanics ------------------------------------------------
+
+
+class _FakeClock:
+    def __init__(self) -> None:
+        self.t = 0.0
+
+    def __call__(self) -> float:
+        return self.t
+
+
+def _build_limiter(rpm: int) -> tuple[_RpmLimiter, _FakeClock, list[float]]:
+    clock = _FakeClock()
+    sleeps: list[float] = []
+
+    async def fake_sleep(secs: float) -> None:
+        sleeps.append(secs)
+        clock.t += secs
+
+    return _RpmLimiter(rpm, clock=clock, sleep=fake_sleep), clock, sleeps
+
+
+async def test_limiter_initial_burst_does_not_sleep() -> None:
+    limiter, _clock, sleeps = _build_limiter(rpm=5)
+    for _ in range(5):
+        await limiter.acquire()
+    assert sleeps == []
+
+
+async def test_limiter_paces_after_burst() -> None:
+    limiter, clock, sleeps = _build_limiter(rpm=60)
+    # 1 token/sec refill, capacity 60. Burn the bucket.
+    for _ in range(60):
+        await limiter.acquire()
+    assert sleeps == []
+    # Sixty-first must wait ~1s for a token to refill.
+    await limiter.acquire()
+    assert sleeps == pytest.approx([1.0])
+    assert clock.t == pytest.approx(1.0)
+    # Sixty-second waits another ~1s.
+    await limiter.acquire()
+    assert sleeps[-1] == pytest.approx(1.0)
+    assert clock.t == pytest.approx(2.0)
+
+
+async def test_limiter_refills_with_wall_time() -> None:
+    limiter, clock, sleeps = _build_limiter(rpm=60)
+    for _ in range(60):
+        await limiter.acquire()
+    # Pretend 10s passed externally — bucket should hold ~10 tokens now.
+    clock.t = 10.0
+    for _ in range(10):
+        await limiter.acquire()
+    assert sleeps == []  # ten free tokens, no sleep needed
+
+
+async def test_limiter_capacity_is_capped_at_rpm() -> None:
+    limiter, clock, sleeps = _build_limiter(rpm=5)
+    # Don't drain. Wait an hour of wall time; refill cannot exceed capacity.
+    clock.t = 3600.0
+    for _ in range(5):
+        await limiter.acquire()
+    assert sleeps == []
+    await limiter.acquire()  # sixth must wait
+    assert sleeps  # at least one sleep recorded
+
+
+def test_limiter_rejects_nonpositive_rpm() -> None:
+    with pytest.raises(ValueError, match="positive"):
+        _RpmLimiter(0)
+
+
+async def test_generate_acquires_one_token_per_attempt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every SDK attempt, including retries, must acquire one RPM token."""
+    client = _make_client()
+    transient = genai_errors.APIError(code=503, response_json={"error": {"message": "busy"}})
+    ok = _response(text="done")
+    mock = AsyncMock(side_effect=[transient, ok])
+    _install_generate(client, mock)
+    monkeypatch.setattr("volly.gemini_client._sleep_backoff", AsyncMock(return_value=None))
+
+    acquired = 0
+
+    async def counting_acquire() -> None:
+        nonlocal acquired
+        acquired += 1
+
+    client._rpm_limiter.acquire = counting_acquire  # type: ignore[method-assign]
+
+    out = await client.text("sys", "hi")
+
+    assert out == "done"
+    assert mock.await_count == 2
+    assert acquired == 2

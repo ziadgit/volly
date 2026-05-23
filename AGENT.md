@@ -224,3 +224,52 @@ volly/
   fallback-to-dropdown, `"info:..."` for a sanitization caption, or
   `None` when canonical/empty. The header parses the prefix and dispatches
   to `st.warning` or `st.caption` accordingly.
+- **Rate-limit reality (real Gemini run on 2026-05-23):** Free tier Flash
+  3.5 is **5 RPM/model**. Default loop iter = 19 parallel calls → wall of
+  429s, current retry sleeps 1/2/4s while Gemini asks for 44s, judge
+  exhausts retries and crashes the whole run. The existing
+  `_sleep_backoff` is per-call exponential backoff — there is no global
+  RPM limiter and no honoring of `RetryInfo.retryDelay`. See the new P0
+  "rate-limit hardening" section at the top of `fix_plan.md`. Concrete
+  trace: `volly/loop.py:259 → judge.rank → gemini_client.json →
+  google.genai.errors.ClientError: 429 RESOURCE_EXHAUSTED`. Judge's
+  `except ValidationError` block does NOT catch `APIError`, so the run
+  dies instead of degrading.
+- **Free tier on Flash 3.5 has TWO ceilings, both via `FreeTier` quotas:**
+  per-minute (`GenerateRequestsPerMinutePerProjectPerModel-FreeTier`,
+  quotaValue 5) and per-day (`GenerateRequestsPerDayPerProjectPerModel-FreeTier`,
+  quotaValue 20). The per-day ceiling is the killer — a single failed run
+  burns it. Resets at UTC midnight by default; sponsorship/credit setups
+  sometimes reset hourly. Diagnostic: the `quotaId` string in the 429
+  response body literally contains `FreeTier` vs. (paid tier has no such
+  marker). The dashboard at https://aistudio.google.com/ shows the
+  currently-selected project's tier; if the dashboard says Tier 1 (1K RPM
+  / 10K RPD on Flash 3.5) but API errors say `FreeTier`, the API key in
+  `.env` was created against a *different* (free-tier) project than the
+  one currently selected in AI Studio.
+- **Operational modes are bundled in `--tier`** (after fix_plan P0
+  "Tier-aware preset flags" lands): `--tier free` for sponsorship/no-
+  billing/hourly-reset scenarios (rpm=4, candidates=3, --no-control,
+  max-retry-wait=3700 so the loop sits through an hourly reset);
+  `--tier paid` for Tier 1+ (rpm=900, candidates=8, control on,
+  max-retry-wait=90). Explicit flags override the preset. `--resume
+  <run-dir>` continues a crashed/quota-blocked run from `state.json`'s
+  last fully-completed iteration without losing the evolved prompt or
+  per-iter PNGs — critical for the "iterate, get quota-locked, wait an
+  hour, pick up where you left off" workflow.
+- `volly.gemini_client._RpmLimiter` is a per-instance token bucket
+  (capacity = `rpm`, refill = `rpm/60` tokens/sec) acquired inside
+  `_generate` ONCE PER ATTEMPT — a 429/503 transport retry re-acquires.
+  Resolution at construction: explicit `rpm=` arg → `GEMINI_RPM` env →
+  default `30`. CLI plumbing is `--rpm N` → `LoopConfig.rpm` →
+  `GeminiClient(rpm=...)`. Limiter exposes `client.rpm` (read-only) for
+  log lines. FIFO ordering comes from a single `asyncio.Lock` held
+  across the refill+wait loop, so callers serialize cleanly even at
+  rpm=5 (one token / 12s). Limiter accepts injectable `clock=` and
+  `sleep=` kwargs purely for tests — production code should never pass
+  them. Tests that construct `GeminiClient` instances must
+  `monkeypatch.delenv("GEMINI_RPM", raising=False)` (there's an autouse
+  fixture in `gemini_client_test.py` that does this for the whole
+  module) or a developer's shell value will leak into the test. Doesn't
+  yet honor `RetryInfo.retryDelay` on 429 or surface throttle logs —
+  those are separate P0 items in `fix_plan.md`.

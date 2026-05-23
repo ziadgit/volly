@@ -28,7 +28,18 @@ from volly.state import IterationRecord, RunHistory, win_rate
 SEED_PROMPT = "You are an ASCII artist. Draw the requested subject."
 
 CURATED_SUBJECTS: frozenset[str] = frozenset(
-    {"cat", "house", "fish", "coffee cup", "smiley", "sailboat", "tree", "heart", "star"}
+    {
+        "cat",
+        "house",
+        "fish",
+        "coffee cup",
+        "smiley",
+        "sailboat",
+        "tree",
+        "heart",
+        "star",
+        "capybara",
+    }
 )
 
 # Per-subject "rehearsed" prompts used by ``--demo`` to pre-warm the evolving arm.
@@ -125,6 +136,18 @@ DEMO_PROMPTS: dict[str, str] = {
         "left-right symmetric column by column. Pad with blank rows above "
         "and below for centering."
     ),
+    "capybara": (
+        "You are an ASCII artist. Draw a capybara in approximately 10-16 "
+        "lines and 28-44 columns — the larger canvas lets you suggest fur "
+        "texture and body mass that smaller subjects don't need. Build a "
+        "rounded barrel-shaped body sitting low on short stubby legs, with "
+        "a blocky muzzle, small rounded ears on top of the head, and a "
+        "single visible eye. Use a tonal palette `. , : ; - = + * # @` "
+        "(roughly light to dark) to suggest fur shading across the body — "
+        "lighter on the belly and around the muzzle, denser along the back "
+        "and shadow side. Keep the outline closed so the silhouette reads "
+        "as one solid animal. Pad with blank rows for centering."
+    ),
 }
 
 _log = logging.getLogger(__name__)
@@ -144,6 +167,7 @@ class LoopConfig:
     rewriter_thinking: Thinking = Thinking.HIGH
     ablate_judge: bool = False
     demo_mode: bool = False
+    rpm: int | None = None
 
 
 def validate_subject(subject: str) -> str:
@@ -358,7 +382,7 @@ async def run(config: LoopConfig, *, client: GeminiClient | None = None) -> RunH
 
     owns_client = client is None
     if client is None:
-        client = GeminiClient()
+        client = GeminiClient(rpm=config.rpm)
 
     history = RunHistory(
         subject=subject,
@@ -464,6 +488,12 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         action="store_true",
         help="pre-warm evolving arm with a rehearsed subject-specific prompt (control stays on seed)",
     )
+    parser.add_argument(
+        "--rpm",
+        type=int,
+        default=None,
+        help="cap Gemini requests per minute (default: GEMINI_RPM env, else 30; set 5 for free tier)",
+    )
     parser.add_argument("--out", type=Path, default=None, help="override VOLLY_RUN_DIR")
     return parser.parse_args(argv)
 
@@ -485,6 +515,7 @@ def main(argv: list[str] | None = None) -> int:
             out_dir=args.out,
             ablate_judge=args.ablate_judge,
             demo_mode=args.demo,
+            rpm=args.rpm,
         )
         history = asyncio.run(run(config))
     except ValueError as exc:

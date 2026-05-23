@@ -51,17 +51,30 @@ async def rank(
 ```
 You are evaluating ASCII art renderings of "{subject}".
 You will see {N} candidate images.
-Score each 0.0–1.0 on: recognizability of the subject, composition,
-proportions, and use of negative space.
+Score each 0.0–1.0, weighing equally:
+  - recognizability of the subject
+  - composition and proportions
+  - use of negative space
+  - shading depth and tonal range (dense ASCII uses . , : ; - = + * # @
+    to suggest light/dark; flat line-art scores lower here)
+  - level of detail (anatomy, texture, surface features)
+  - character-set variety (more distinct glyphs → more rendering range,
+    up to a point of legibility)
 Identify the best and worst.
 Then suggest 1–3 concrete improvements to the artist's system prompt —
-the prompt is included below. Be specific, not generic.
+the prompt is included below. Be specific, not generic. Prefer
+suggestions about technique (shading palette, anatomy landmarks,
+proportion ratios) over subject-name repetition.
 
 Current artist system prompt:
 ---
 {system_prompt}
 ---
 ```
+
+The six axes above are listed in priority order: a candidate that's
+unrecognizable but heavily shaded must still score low. Recognizability is
+the gate; detail/shading is what separates 0.6 from 0.9.
 
 ## Why suggestions live here
 

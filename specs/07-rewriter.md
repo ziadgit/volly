@@ -54,6 +54,22 @@ Produce the new system prompt. Rules:
 - Output ONLY the new system prompt. No commentary, no fences.
 ```
 
+## Graceful degradation on API failure
+
+If `client.text(...)` raises `google.genai.errors.APIError` (or any subclass
+— `ClientError`, `ServerError`), `rewrite()` MUST NOT re-raise. Instead:
+
+1. Log INFO `rewriter degraded: <reason>; keeping prior prompt`.
+2. Return `current_prompt` unchanged.
+
+Rationale: a 429 from the rewriter must not crash the loop. The loop will
+simply reuse the prior iteration's evolving prompt for the next iteration —
+no learning happens that round, but the run continues and the judge/actor
+keep producing data. Same shape as the judge's uniform-fallback path
+(spec 06).
+
+The rewriter test surface must include this path.
+
 ## Test surface
 
 - `rewriter_test.py` mocks `GeminiClient.text` with canned outputs.

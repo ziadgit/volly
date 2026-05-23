@@ -64,6 +64,10 @@ Flags:
 - `--iterations` (default 8)
 - `--candidates` (default 8)
 - `--no-control` (skip the control arm, half the API spend)
+- `--rpm N` (cap requests/minute across actor+judge+rewriter; default 30, set 5 for free tier — see spec 03 §"Rate limiting")
+- `--max-retry-wait N` (per-call ceiling on honoring server `retryDelay`, in seconds; default 90; set ~3700 to wait through an hourly reset — see spec 03 §"Patient mode")
+- `--resume <run-dir>` (continue an existing run from its last completed iteration; preserves `run_dir`, `state.json`, and the evolved prompt — see §"Resumable runs" below)
+- `--tier {free,paid}` (preset bundle — see §"Tier presets" below)
 - `--ablate-judge` (rerun a text-only judge per iter and log the top-3 delta vs. the vision judge)
 - `--demo` (pre-warm the evolving arm with `DEMO_PROMPTS[subject]`; control arm
   stays on `SEED_PROMPT` so the comparison is still meaningful — see
@@ -73,10 +77,28 @@ Flags:
 ## Concurrency budget
 
 Per iteration, with both arms on: `2 * 8` actor calls + `2` judge calls +
-`1` rewriter call = ~19 API calls in parallel. Fits Flash 3.5 quota
-comfortably. If we hit a rate limit, the failure mode is a 429 — wrap each
-call in a `tenacity`-style retry with jittered backoff inside the
-`gemini_client` module, not here.
+`1` rewriter call = **~19 API calls in parallel**. On paid tier this
+finishes in ~10 s; on free tier (5 RPM) the same iteration takes ~4
+minutes because the in-client limiter (spec 03) queues bursts. The
+client honors Gemini's `RetryInfo.retryDelay` on 429s, so the loop never
+crashes from rate limits — it just runs slower. The orchestration code
+here does NOT do its own throttling; that lives entirely in
+`gemini_client`.
+
+## Iteration-1 wedge handling
+
+Iteration 1 is uniquely fragile: there's no "prior best" to pad from when
+the actor returns fewer than `k` candidates. If the actor returns 0
+candidates (full free-tier wedge before the limiter warmed up), do NOT
+call the judge with an empty image list — the SDK rejects that. Instead:
+
+1. Sleep `min(60s, last_observed_retryDelay)`.
+2. Re-run iteration 1, up to **2 retries**.
+3. If still empty after 2 retries, exit with a clear banner:
+   `iter 1 wedged — likely rate-limited; try --rpm=<lower> or upgrade tier`.
+
+Iteration ≥ 2 with shortfall continues to pad from the prior iteration's
+best, as before.
 
 ## Plateau
 
@@ -91,6 +113,47 @@ predictable timing matters more than saved tokens on stage.
   iteration's best.
 - Any unhandled exception → still write `state.json` to disk so the UI can
   render up to the failure point.
+
+## Tier presets
+
+`--tier` is a convenience bundle for the two real operational modes.
+Explicit flags override the preset (e.g. `--tier free --candidates 4`).
+
+| Flag                 | `--tier free` (sponsorship / no billing)  | `--tier paid` (Tier 1+)       |
+| -------------------- | ----------------------------------------- | ----------------------------- |
+| `--rpm`              | 4                                         | 900                           |
+| `--candidates`       | 3                                         | 8                             |
+| `--no-control`       | True (skip control arm to halve API cost) | False                         |
+| `--max-retry-wait`   | 3700 (wait through hourly reset)          | 90                            |
+
+Default when `--tier` is omitted is **`paid`** — matches existing CLI
+defaults so unchanged invocations keep working. Operators in
+sponsorship/free-tier scenarios add `--tier free` once.
+
+## Resumable runs
+
+A run that crashes mid-loop (quota lockout, killed process, etc.) MUST be
+resumable without losing work. `state.json` is the single source of
+truth; on `--resume <run-dir>`:
+
+1. Load `state.json` from the run-dir. Reject if missing or malformed.
+2. Find the last iteration `N` for which BOTH arms have a complete
+   `IterationRecord` (or the only arm in `--no-control` mode).
+3. Set `evolving_prompt = state.iterations[N].evolving.system_prompt`
+   (the prompt the rewriter produced AFTER iter N — i.e., what would
+   have been used for iter N+1).
+4. Set `control_prompt = SEED_PROMPT` (always).
+5. Reuse the existing `run_dir` — do NOT create a new timestamped dir.
+   Per-iteration files (`iter-NN/...`) for iter ≤ N stay on disk untouched.
+6. Continue the main loop at iteration `N+1`.
+
+If `state.json` has a partial iteration `N` (e.g. evolving arm completed
+but control didn't), discard the partial half from in-memory state and
+re-run iteration `N` cleanly. Do NOT delete the partial half from disk —
+overwrite on the next save.
+
+If `state.iterations` is empty (resume of a never-progressed run),
+behave identically to a fresh run but with the existing run-dir.
 
 ## Module split
 
