@@ -101,8 +101,11 @@ volly/
   dep, not in `pyproject`), then falls back to `ImageFont.load_default()`
   — which is proportional, so grid alignment degrades. On this Mac,
   `/System/Library/Fonts/Menlo.ttc` is the resolved font.
-- Pillow 14 deprecates `Image.Image.getdata`; renderer tests still use
-  it (warns, doesn't fail). Tracked in fix_plan.md under P2.
+- Pillow 12.2 deprecates `Image.Image.getdata` (removal in Pillow 14,
+  2027-10-15). The drop-in replacement is `img.get_flattened_data()` —
+  same shape for RGB (tuple of `(r, g, b)` tuples, length `w*h`). Used
+  throughout `renderer_test.py`. The deprecation message itself names
+  `get_flattened_data` as the migration target.
 - `volly.actor.generate` returns a list whose length may be `< k` when
   some `GeminiClient.text` calls raise — `return_exceptions=True` on
   `asyncio.gather` swallows them by design. Each surviving `Candidate`
