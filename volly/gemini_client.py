@@ -11,6 +11,7 @@ import asyncio
 import io
 import os
 import random
+import re
 import time
 from collections.abc import Awaitable, Callable
 from enum import StrEnum
@@ -27,6 +28,9 @@ _DEFAULT_MODEL = "gemini-3.5-flash"
 _DEFAULT_RPM = 30
 _RETRY_STATUSES = frozenset({429, 500, 503})
 _MAX_TRANSPORT_ATTEMPTS = 3
+_MAX_RETRY_WAIT_S = 90.0
+_RETRY_INFO_TYPE = "type.googleapis.com/google.rpc.RetryInfo"
+_RETRY_DELAY_RE = re.compile(r"^(\d+(?:\.\d+)?)s$")
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -143,6 +147,46 @@ async def _sleep_backoff(attempt: int) -> None:
     await asyncio.sleep(base * (0.5 + random.random()))
 
 
+def _parse_retry_delay(exc: genai_errors.APIError) -> float | None:
+    """Extract ``RetryInfo.retryDelay`` (seconds) from a Gemini ``APIError``.
+
+    Returns ``None`` if the error body lacks a parseable RetryInfo entry.
+    The error body shape is::
+
+        {"error": {"details": [{"@type": ".../RetryInfo", "retryDelay": "44s"}, ...]}}
+    """
+    details = getattr(exc, "details", None)
+    if not isinstance(details, dict):
+        return None
+    inner = details.get("error")
+    if not isinstance(inner, dict):
+        return None
+    items = inner.get("details")
+    if not isinstance(items, list):
+        return None
+    for item in items:
+        if not isinstance(item, dict) or item.get("@type") != _RETRY_INFO_TYPE:
+            continue
+        raw = item.get("retryDelay")
+        if not isinstance(raw, str):
+            return None
+        m = _RETRY_DELAY_RE.match(raw)
+        if not m:
+            return None
+        return float(m.group(1))
+    return None
+
+
+def _retry_delay_jitter() -> float:
+    """Random jitter ∈ [0, 2]s applied on top of server-supplied retryDelay."""
+    return random.uniform(0.0, 2.0)
+
+
+async def _sleep_retry_delay(seconds: float) -> None:
+    """Sleep wrapper exposed at module level for tests to monkeypatch."""
+    await asyncio.sleep(seconds)
+
+
 class GeminiClient:
     """Thin async wrapper over ``google.genai`` for Gemini 3.5 Flash."""
 
@@ -174,6 +218,7 @@ class GeminiClient:
         config: types.GenerateContentConfig,
     ) -> types.GenerateContentResponse:
         last_exc: BaseException | None = None
+        total_retry_wait = 0.0
         for attempt in range(_MAX_TRANSPORT_ATTEMPTS):
             await self._rpm_limiter.acquire()
             try:
@@ -184,7 +229,15 @@ class GeminiClient:
                 if exc.code not in _RETRY_STATUSES or attempt == _MAX_TRANSPORT_ATTEMPTS - 1:
                     raise
                 last_exc = exc
-                await _sleep_backoff(attempt)
+                server_delay = _parse_retry_delay(exc) if exc.code == 429 else None
+                if server_delay is not None:
+                    planned = server_delay + _retry_delay_jitter()
+                    if total_retry_wait + planned > _MAX_RETRY_WAIT_S:
+                        raise
+                    total_retry_wait += planned
+                    await _sleep_retry_delay(planned)
+                else:
+                    await _sleep_backoff(attempt)
         assert last_exc is not None  # unreachable; keeps the type-checker honest
         raise last_exc
 

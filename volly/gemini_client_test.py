@@ -11,7 +11,13 @@ from google.genai import errors as genai_errors
 from google.genai import types
 from pydantic import BaseModel, ValidationError
 
-from volly.gemini_client import GeminiClient, Thinking, _resolve_rpm, _RpmLimiter
+from volly.gemini_client import (
+    GeminiClient,
+    Thinking,
+    _parse_retry_delay,
+    _resolve_rpm,
+    _RpmLimiter,
+)
 
 
 class _Schema(BaseModel):
@@ -338,3 +344,172 @@ async def test_generate_acquires_one_token_per_attempt(
     assert out == "done"
     assert mock.await_count == 2
     assert acquired == 2
+
+
+# --- RetryInfo parsing ----------------------------------------------------
+
+
+def _quota_error(retry_delay: str | None = "44s", *, code: int = 429) -> genai_errors.APIError:
+    """Build an ``APIError`` shaped like Gemini's real 429 response body."""
+    details: list[dict[str, Any]] = []
+    if retry_delay is not None:
+        details.append(
+            {
+                "@type": "type.googleapis.com/google.rpc.RetryInfo",
+                "retryDelay": retry_delay,
+            }
+        )
+    return genai_errors.APIError(
+        code=code,
+        response_json={
+            "error": {
+                "code": code,
+                "message": "Resource exhausted",
+                "status": "RESOURCE_EXHAUSTED",
+                "details": details,
+            }
+        },
+    )
+
+
+def test_parse_retry_delay_seconds() -> None:
+    assert _parse_retry_delay(_quota_error("44s")) == 44.0
+
+
+def test_parse_retry_delay_fractional() -> None:
+    assert _parse_retry_delay(_quota_error("44.5s")) == 44.5
+
+
+def test_parse_retry_delay_returns_none_when_details_absent() -> None:
+    exc = genai_errors.APIError(code=429, response_json={"error": {"message": "slow"}})
+    assert _parse_retry_delay(exc) is None
+
+
+def test_parse_retry_delay_returns_none_when_response_unstructured() -> None:
+    # SDK occasionally stuffs a plain string into response_json on unusual errors.
+    exc = genai_errors.APIError(code=429, response_json="quota exhausted")
+    assert _parse_retry_delay(exc) is None
+
+
+def test_parse_retry_delay_returns_none_for_malformed_delay() -> None:
+    assert _parse_retry_delay(_quota_error("44")) is None  # missing "s" suffix
+    assert _parse_retry_delay(_quota_error("44ms")) is None  # wrong unit
+    assert _parse_retry_delay(_quota_error("")) is None
+
+
+def test_parse_retry_delay_skips_non_retry_info_details() -> None:
+    exc = genai_errors.APIError(
+        code=429,
+        response_json={
+            "error": {
+                "details": [
+                    {"@type": "type.googleapis.com/google.rpc.ErrorInfo", "reason": "RATE_LIMIT"},
+                ]
+            }
+        },
+    )
+    assert _parse_retry_delay(exc) is None
+
+
+def test_parse_retry_delay_handles_missing_retry_delay_field() -> None:
+    exc = genai_errors.APIError(
+        code=429,
+        response_json={
+            "error": {
+                "details": [{"@type": "type.googleapis.com/google.rpc.RetryInfo"}]
+            }
+        },
+    )
+    assert _parse_retry_delay(exc) is None
+
+
+# --- 429 retry-delay handling ---------------------------------------------
+
+
+async def test_generate_honors_server_retry_delay_on_429(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 429 carrying RetryInfo must sleep ~retryDelay+jitter, then retry."""
+    client = _make_client()
+    quota = _quota_error("2s")
+    ok = _response(text="finally")
+    mock = AsyncMock(side_effect=[quota, ok])
+    _install_generate(client, mock)
+    monkeypatch.setattr("volly.gemini_client._retry_delay_jitter", lambda: 0.5)
+    sleep_calls: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        sleep_calls.append(seconds)
+
+    monkeypatch.setattr("volly.gemini_client._sleep_retry_delay", fake_sleep)
+    backoff = AsyncMock(return_value=None)
+    monkeypatch.setattr("volly.gemini_client._sleep_backoff", backoff)
+
+    out = await client.text("sys", "hi")
+
+    assert out == "finally"
+    assert mock.await_count == 2
+    assert sleep_calls == [pytest.approx(2.5)]
+    assert backoff.await_count == 0  # backoff path skipped when RetryInfo present
+
+
+async def test_generate_falls_back_to_backoff_without_retry_info(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 429 with no RetryInfo must use the existing exponential backoff path."""
+    client = _make_client()
+    quota = genai_errors.APIError(code=429, response_json={"error": {"message": "slow"}})
+    ok = _response(text="done")
+    mock = AsyncMock(side_effect=[quota, ok])
+    _install_generate(client, mock)
+    retry_sleep = AsyncMock(return_value=None)
+    monkeypatch.setattr("volly.gemini_client._sleep_retry_delay", retry_sleep)
+    backoff = AsyncMock(return_value=None)
+    monkeypatch.setattr("volly.gemini_client._sleep_backoff", backoff)
+
+    out = await client.text("sys", "hi")
+
+    assert out == "done"
+    assert mock.await_count == 2
+    assert retry_sleep.await_count == 0
+    assert backoff.await_count == 1
+
+
+async def test_generate_raises_when_retry_delay_exceeds_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A retryDelay larger than the 90s cap must surface the APIError to callers."""
+    client = _make_client()
+    quota = _quota_error("100s")
+    mock = AsyncMock(side_effect=quota)
+    _install_generate(client, mock)
+    monkeypatch.setattr("volly.gemini_client._retry_delay_jitter", lambda: 0.0)
+    retry_sleep = AsyncMock(return_value=None)
+    monkeypatch.setattr("volly.gemini_client._sleep_retry_delay", retry_sleep)
+
+    with pytest.raises(genai_errors.APIError):
+        await client.text("sys", "hi")
+
+    # No sleep — we bailed before waiting, and there was only one transport attempt.
+    assert mock.await_count == 1
+    assert retry_sleep.await_count == 0
+
+
+async def test_generate_raises_when_cumulative_retry_delay_exceeds_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two 50s retryDelays sum past 90s; the second attempt must raise."""
+    client = _make_client()
+    quota = _quota_error("50s")
+    mock = AsyncMock(side_effect=[quota, quota, _response(text="never reached")])
+    _install_generate(client, mock)
+    monkeypatch.setattr("volly.gemini_client._retry_delay_jitter", lambda: 0.0)
+    retry_sleep = AsyncMock(return_value=None)
+    monkeypatch.setattr("volly.gemini_client._sleep_retry_delay", retry_sleep)
+
+    with pytest.raises(genai_errors.APIError):
+        await client.text("sys", "hi")
+
+    # First 429: slept 50s. Second 429: would push total to 100s > 90s cap → raise.
+    assert mock.await_count == 2
+    assert retry_sleep.await_count == 1

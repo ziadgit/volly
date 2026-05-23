@@ -270,6 +270,25 @@ volly/
   them. Tests that construct `GeminiClient` instances must
   `monkeypatch.delenv("GEMINI_RPM", raising=False)` (there's an autouse
   fixture in `gemini_client_test.py` that does this for the whole
-  module) or a developer's shell value will leak into the test. Doesn't
-  yet honor `RetryInfo.retryDelay` on 429 or surface throttle logs —
-  those are separate P0 items in `fix_plan.md`.
+  module) or a developer's shell value will leak into the test. Throttle
+  logs and the operator-configurable `max_retry_wait_s` / patient mode
+  are still separate P0 items in `fix_plan.md`.
+- `volly.gemini_client._parse_retry_delay(exc)` extracts the
+  server-supplied `RetryInfo.retryDelay` (e.g. `"44s"` or `"44.5s"`) from a
+  `google.genai.errors.APIError`. The error body sits on
+  `exc.details["error"]["details"]`, a list — RetryInfo is the entry whose
+  `@type` ends `/google.rpc.RetryInfo`. Returns `None` on any structural
+  miss (unstructured `response_json`, no `error` dict, no `details` list,
+  no RetryInfo entry, missing/malformed `retryDelay`). When `_generate`
+  hits a 429 it asks the parser first; on a hit it sleeps
+  `retryDelay + _retry_delay_jitter()` (jitter ∈ [0, 2)s) via
+  `_sleep_retry_delay`, and tracks cumulative wait across retries against
+  `_MAX_RETRY_WAIT_S` (90s). If the next planned wait would push the
+  cumulative over the cap the bare `APIError` is re-raised — callers see
+  the same exception they would have without the retry, so judge/rewriter
+  fallback paths can degrade gracefully. Tests monkeypatch
+  `_retry_delay_jitter` (sync, returns float) and `_sleep_retry_delay`
+  (async, takes seconds) at module level; both are deliberate seams.
+  Falls back to `_sleep_backoff` when RetryInfo is absent — the existing
+  `test_generate_raises_after_max_transport_attempts` still exercises
+  that path (its 429s carry no RetryInfo).
