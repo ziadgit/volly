@@ -22,7 +22,7 @@ _FONT_CANDIDATES: tuple[str, ...] = (
     "C:\\Windows\\Fonts\\CascadiaMono.ttf",
 )
 
-_MIN_FONT_SIZE = 6
+_MIN_FONT_SIZE = 8
 
 
 def _find_font_path() -> str | None:
@@ -117,7 +117,7 @@ def _best_fitting_size(
 def render(
     ascii_text: str,
     *,
-    canvas: tuple[int, int] = (640, 640),
+    canvas: tuple[int, int] = (1024, 768),
     font_size: int = 14,
     bg: str = "white",
     fg: str = "black",
@@ -126,7 +126,7 @@ def render(
 
     Trailing blank lines and trailing whitespace on each line are stripped
     before measurement. If the drawing overflows ``canvas``, ``font_size``
-    is binary-searched down to 6pt. Empty input yields a blank canvas.
+    is binary-searched down to 8pt. Empty input yields a blank canvas.
     """
     img = Image.new("RGB", canvas, color=bg)
     lines = _trim(ascii_text)

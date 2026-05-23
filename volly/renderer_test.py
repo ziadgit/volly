@@ -30,10 +30,11 @@ def test_render_whitespace_only_returns_blank_canvas() -> None:
 
 
 def test_render_overflow_downscales_and_does_not_crash() -> None:
-    # 200 lines × 200 cols at 14pt vastly exceeds 64×64 px — must shrink.
-    huge = "\n".join("M" * 200 for _ in range(200))
-    img = render(huge, canvas=(64, 64), font_size=14)
-    assert img.size == (64, 64)
+    # 200 lines × 300 cols at 14pt vastly exceeds the (1024, 768) default —
+    # must shrink to _MIN_FONT_SIZE (8pt) without cropping or crashing.
+    huge = "\n".join("M" * 300 for _ in range(200))
+    img = render(huge, font_size=14)
+    assert img.size == (1024, 768)
     assert _has_non_bg_pixel(img)
 
 

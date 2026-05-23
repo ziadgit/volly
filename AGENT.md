@@ -427,6 +427,19 @@ volly/
   would silently bypass `GEMINI_RPM` env — keeping the no-tier path
   pass-through is the cleanest backward-compat story. `--tier paid`
   remains the explicit opt-in for the 900 RPM ceiling.
+- `volly.renderer.render` defaults are `canvas=(1024, 768)` (was 640²) and
+  `_MIN_FONT_SIZE = 8` (was 6) — paired bump so the shaded `capybara`/`owl`/
+  `mushroom` outputs the rewriter now pushes for actually fit without the
+  downscaler clipping detail. The single caller in `volly/loop.py:384`
+  (`renderer.render(cand.text)`) takes the new defaults implicitly — no
+  callsite change needed. All renderer tests pass `canvas=` explicitly so
+  they are insulated; only `test_render_overflow_downscales_and_does_not_crash`
+  was tuned (now 200×300 "M" chars at the default canvas, exercising the
+  downscale-to-8pt fallback). Spec 05 already prescribed the new defaults
+  — this loop just caught the code up. When you bump again: change
+  default, `_MIN_FONT_SIZE`, the "down to Xpt" line in `render()`'s
+  docstring, AND the overflow test in lockstep, and re-skim
+  `specs/05-renderer.md` line 13/24 for the prescribed values.
 - `volly.judge` system prompts (`_SYSTEM_TEMPLATE` for vision-mode and
   `_SYSTEM_TEMPLATE_TEXT` for the `--ablate-judge` text-only path) score
   six axes, "weighing equally", in the order spec 06 §"System prompt for
