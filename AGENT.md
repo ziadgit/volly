@@ -292,6 +292,23 @@ volly/
   Falls back to `_sleep_backoff` when RetryInfo is absent — the existing
   `test_generate_raises_after_max_transport_attempts` still exercises
   that path (its 429s carry no RetryInfo).
+- `volly.loop` handles the **iteration-1 wedge** (zero candidates from any
+  arm) by retrying iter 1 up to 2 times before aborting. Spec 02
+  §"Iteration-1 wedge handling" is the source of truth. Retry trigger:
+  ANY arm in iter 1 produces an empty candidate list (iter ≥ 2 still pads
+  from prior best — only iter 1 has no fallback). Logic lives inline in
+  `run()` as a `while True` inside the per-iteration `for`; the task list
+  is rebuilt each attempt by the module-level `_build_arm_tasks` helper
+  (extracted to avoid ruff B023 closure-over-loop-variable). Sleep between
+  attempts is `_ITER_ONE_RETRY_SLEEP_S` (60s) via `_iter_one_retry_sleep`
+  — module-level async seam, tests monkeypatch it to skip the wait. After
+  `_ITER_ONE_MAX_RETRIES + 1` (= 3) attempts with any arm still empty,
+  raises `IterationOneWedgedError` (subclass of `RuntimeError`); `main`
+  catches it, prints `_ITER_ONE_WEDGED_BANNER` to stderr, and exits **rc=3**.
+  Partial shortfall (1..k-1 cands) does NOT retry — the judge still ranks
+  what we have. The `run()` `except Exception:` block re-saves `state.json`
+  on the wedge path, so a wedged run leaves an empty-iterations state.json
+  on disk plus whatever iter-01/ artifacts the final failed attempt wrote.
 - **Judge + rewriter both swallow `google.genai.errors.APIError`** (and
   its subclasses `ClientError`/`ServerError`, by `except APIError`) so
   the loop survives quota/transient failures the client retry could not

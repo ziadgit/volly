@@ -154,6 +154,31 @@ _log = logging.getLogger(__name__)
 
 _JUDGE_HISTORY_LIMIT = 4
 
+# Iteration-1 wedge handling (specs/02-loop.md §"Iteration-1 wedge handling").
+# Iter 1 has no prior best to pad from, so a zero-candidate arm cannot be
+# repaired locally — only a fresh attempt helps. Sleep between retries is a
+# module-level seam so tests can monkeypatch it to skip the 60s wait.
+_ITER_ONE_MAX_RETRIES = 2
+_ITER_ONE_RETRY_SLEEP_S = 60.0
+
+_ITER_ONE_WEDGED_BANNER = (
+    "iter 1 wedged — likely rate-limited; try --rpm=<lower> or upgrade tier"
+)
+
+
+class IterationOneWedgedError(RuntimeError):
+    """Iteration 1 failed to produce ≥1 candidate per arm after retries.
+
+    Raised after ``_ITER_ONE_MAX_RETRIES + 1`` attempts when at least one arm
+    still returns zero candidates. ``main`` catches this, prints
+    ``_ITER_ONE_WEDGED_BANNER`` to stderr, and exits with code 3.
+    """
+
+
+async def _iter_one_retry_sleep(seconds: float) -> None:
+    """Sleep between iter-1 retries. Module seam so tests can fast-forward."""
+    await asyncio.sleep(seconds)
+
 
 @dataclass
 class LoopConfig:
@@ -373,6 +398,60 @@ async def _log_text_judge_delta(
     )
 
 
+def _build_arm_tasks(
+    *,
+    client: GeminiClient,
+    config: LoopConfig,
+    history: RunHistory,
+    iter_index: int,
+    iter_dir: Path,
+    subject: str,
+    evolving_prompt: str,
+    control_prompt: str,
+) -> list:
+    """Build the per-iteration list of ``_run_arm`` coroutines.
+
+    Module-level (not nested in ``run``) so the iter-1 retry while-loop can
+    re-invoke it without tripping ruff's B023 (closure-over-loop-variable)
+    check — each call gets a fresh batch of coroutines bound to the current
+    iteration's prompt + dir.
+    """
+    tasks = [
+        _run_arm(
+            client,
+            arm="evolving",
+            iter_index=iter_index,
+            system_prompt=evolving_prompt,
+            subject=subject,
+            k=config.candidates,
+            actor_thinking=config.actor_thinking,
+            judge_thinking=config.judge_thinking,
+            judge_history=_judge_history_for(history, "evolving"),
+            iter_dir=iter_dir,
+            prior_best=_last_best_candidate(history, "evolving"),
+            ablate_judge=config.ablate_judge,
+        )
+    ]
+    if not config.no_control:
+        tasks.append(
+            _run_arm(
+                client,
+                arm="control",
+                iter_index=iter_index,
+                system_prompt=control_prompt,
+                subject=subject,
+                k=config.candidates,
+                actor_thinking=config.actor_thinking,
+                judge_thinking=config.judge_thinking,
+                judge_history=_judge_history_for(history, "control"),
+                iter_dir=iter_dir,
+                prior_best=_last_best_candidate(history, "control"),
+                ablate_judge=config.ablate_judge,
+            )
+        )
+    return tasks
+
+
 async def run(config: LoopConfig, *, client: GeminiClient | None = None) -> RunHistory:
     """Run the full evolving + control loop. Returns a populated ``RunHistory``."""
     subject = validate_subject(config.subject)
@@ -401,41 +480,49 @@ async def run(config: LoopConfig, *, client: GeminiClient | None = None) -> RunH
             iter_dir = run_dir / f"iter-{iter_index:02d}"
             _log.info("iter %d/%d starting", iter_index, config.iterations)
 
-            arm_tasks = [
-                _run_arm(
-                    client,
-                    arm="evolving",
-                    iter_index=iter_index,
-                    system_prompt=evolving_prompt,
-                    subject=subject,
-                    k=config.candidates,
-                    actor_thinking=config.actor_thinking,
-                    judge_thinking=config.judge_thinking,
-                    judge_history=_judge_history_for(history, "evolving"),
-                    iter_dir=iter_dir,
-                    prior_best=_last_best_candidate(history, "evolving"),
-                    ablate_judge=config.ablate_judge,
-                )
-            ]
-            if not config.no_control:
-                arm_tasks.append(
-                    _run_arm(
-                        client,
-                        arm="control",
+            attempts_remaining = (
+                _ITER_ONE_MAX_RETRIES + 1 if iter_index == 1 else 1
+            )
+            while True:
+                arm_results = await asyncio.gather(
+                    *_build_arm_tasks(
+                        client=client,
+                        config=config,
+                        history=history,
                         iter_index=iter_index,
-                        system_prompt=control_prompt,
-                        subject=subject,
-                        k=config.candidates,
-                        actor_thinking=config.actor_thinking,
-                        judge_thinking=config.judge_thinking,
-                        judge_history=_judge_history_for(history, "control"),
                         iter_dir=iter_dir,
-                        prior_best=_last_best_candidate(history, "control"),
-                        ablate_judge=config.ablate_judge,
+                        subject=subject,
+                        evolving_prompt=evolving_prompt,
+                        control_prompt=control_prompt,
                     )
                 )
+                attempts_remaining -= 1
 
-            arm_results = await asyncio.gather(*arm_tasks)
+                if iter_index != 1:
+                    break
+
+                empty = [r for r in arm_results if not r.candidates]
+                if not empty:
+                    break
+
+                if attempts_remaining == 0:
+                    raise IterationOneWedgedError(
+                        f"iter 1 wedged: {len(empty)} arm(s) produced 0 candidates "
+                        f"after {_ITER_ONE_MAX_RETRIES + 1} attempts"
+                    )
+
+                for record in empty:
+                    _log.warning(
+                        "iter 1 produced %d/%d candidates (arm=%s); "
+                        "retrying iter 1 in %.0fs (RPM=%d)",
+                        len(record.candidates),
+                        config.candidates,
+                        record.arm,
+                        _ITER_ONE_RETRY_SLEEP_S,
+                        client.rpm,
+                    )
+                await _iter_one_retry_sleep(_ITER_ONE_RETRY_SLEEP_S)
+
             for record in arm_results:
                 history.add(record)
 
@@ -521,6 +608,9 @@ def main(argv: list[str] | None = None) -> int:
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
+    except IterationOneWedgedError:
+        print(_ITER_ONE_WEDGED_BANNER, file=sys.stderr)
+        return 3
     except KeyboardInterrupt:
         print("interrupted", file=sys.stderr)
         return 130

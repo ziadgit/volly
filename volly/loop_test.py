@@ -203,23 +203,190 @@ async def test_run_pads_candidates_from_prior_best_when_actor_short(
     assert iter2.candidates[2].text == "art-1-2"
 
 
-async def test_run_iteration_one_with_zero_candidates_does_not_crash(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+async def test_run_iteration_one_with_zero_candidates_raises_after_retries(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
+    """Iter 1 with 0 cands retries twice then raises IterationOneWedgedError.
+
+    Per ``specs/02-loop.md`` §"Iteration-1 wedge handling": no prior best to
+    pad from, so calling the judge with an empty image list is forbidden —
+    the only safe recovery is a fresh attempt, up to 2 retries.
+    """
+    attempts = {"n": 0}
+
     async def empty(*a, **k):
+        attempts["n"] += 1
         return []
 
+    sleeps: list[float] = []
+
+    async def fast_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
     monkeypatch.setattr(loop.actor, "generate", empty)
+    monkeypatch.setattr(loop, "_iter_one_retry_sleep", fast_sleep)
     client = _stub_client(judge_results=[])
     config = loop.LoopConfig(
         subject="cat", iterations=1, candidates=4, no_control=True, out_dir=tmp_path
     )
 
+    with caplog.at_level("WARNING", logger="volly.loop"):
+        with pytest.raises(loop.IterationOneWedgedError):
+            await loop.run(config, client=client)
+
+    # 1 initial attempt + 2 retries = 3 actor.generate calls
+    assert attempts["n"] == 3
+    # Slept twice (between attempts, not after the final failure)
+    assert sleeps == [loop._ITER_ONE_RETRY_SLEEP_S, loop._ITER_ONE_RETRY_SLEEP_S]
+    # Warning surfaced for each empty arm on each non-final attempt (1 arm × 2 = 2)
+    msgs = [r.getMessage() for r in caplog.records if "iter 1 produced" in r.getMessage()]
+    assert len(msgs) == 2
+    assert all("retrying iter 1" in m for m in msgs)
+
+
+async def test_run_iteration_one_retry_succeeds_on_second_attempt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A flaky iter-1 actor recovers on the first retry and the run continues."""
+    attempts = {"n": 0}
+
+    async def flaky(client, system_prompt, subject, *, k, thinking, temperature=1.0):
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            return []
+        return [Candidate(text=f"art-{i}", index=i, raw=f"raw-{i}") for i in range(k)]
+
+    async def fast_sleep(seconds: float) -> None:
+        return
+
+    monkeypatch.setattr(loop.actor, "generate", flaky)
+    monkeypatch.setattr(loop, "_iter_one_retry_sleep", fast_sleep)
+
+    client = _stub_client(judge_results=[_judge_result(3, best=0)])
+    config = loop.LoopConfig(
+        subject="cat", iterations=1, candidates=3, no_control=True, out_dir=tmp_path
+    )
+
     history = await loop.run(config, client=client)
+    assert attempts["n"] == 2
     assert len(history.iterations) == 1
-    record = history.iterations[0]
-    assert record.candidates == []
-    assert record.judge.scores == []
+    assert len(history.iterations[0].candidates) == 3
+
+
+async def test_run_iteration_one_partial_shortfall_does_not_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Iter 1 with 1/k cands (some > 0) records the partial set without retrying.
+
+    Per spec 02 §"Iteration-1 wedge handling", retry kicks in ONLY for zero
+    candidates; partial shortfall is recorded as-is so the judge still ranks
+    what we have.
+    """
+    attempts = {"n": 0}
+
+    async def partial(client, system_prompt, subject, *, k, thinking, temperature=1.0):
+        attempts["n"] += 1
+        # Always return 1/k candidates so a retry would be visible as a 2nd call
+        return [Candidate(text="art-1", index=1, raw="raw-1")]
+
+    monkeypatch.setattr(loop.actor, "generate", partial)
+    client = _stub_client(judge_results=[_judge_result(1, best=0)])
+    config = loop.LoopConfig(
+        subject="cat", iterations=1, candidates=4, no_control=True, out_dir=tmp_path
+    )
+
+    history = await loop.run(config, client=client)
+    assert attempts["n"] == 1
+    assert len(history.iterations) == 1
+    assert len(history.iterations[0].candidates) == 1
+
+
+async def test_run_iteration_one_wedged_only_one_arm_empty_still_retries(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If ANY arm (not both) hits 0 cands in iter 1, the whole iter retries.
+
+    Iter 1 has no prior best for either arm — a single empty arm cannot be
+    repaired in-place, so the orchestrator retries both arms together.
+    """
+    calls = {"n": 0}
+
+    async def first_call_empty_then_full(
+        client, system_prompt, subject, *, k, thinking, temperature=1.0
+    ):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            # First dispatched arm (evolving) of attempt 1 returns empty.
+            return []
+        return [Candidate(text=f"art-{i}", index=i, raw=f"raw-{i}") for i in range(k)]
+
+    async def fast_sleep(seconds: float) -> None:
+        return
+
+    monkeypatch.setattr(loop.actor, "generate", first_call_empty_then_full)
+    monkeypatch.setattr(loop, "_iter_one_retry_sleep", fast_sleep)
+
+    # Attempt 1: control arm calls judge (1). Attempt 2: both arms (2). Total 3.
+    client = _stub_client(
+        judge_results=[
+            _judge_result(2, best=0),
+            _judge_result(2, best=0),
+            _judge_result(2, best=0),
+        ],
+    )
+    config = loop.LoopConfig(
+        subject="cat",
+        iterations=1,
+        candidates=2,
+        no_control=False,
+        out_dir=tmp_path,
+    )
+
+    history = await loop.run(config, client=client)
+    # Final attempt succeeded — both arms recorded exactly once
+    arms = sorted(r.arm for r in history.iterations)
+    assert arms == ["control", "evolving"]
+    # 2 attempts × 2 arms = 4 actor.generate calls
+    assert calls["n"] == 4
+
+
+def test_main_returns_three_with_banner_on_iter_one_wedge(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``main`` translates ``IterationOneWedgedError`` into rc=3 + banner on stderr."""
+
+    async def empty(*a, **k):
+        return []
+
+    async def fast_sleep(seconds: float) -> None:
+        return
+
+    monkeypatch.setattr(loop.actor, "generate", empty)
+    monkeypatch.setattr(loop, "_iter_one_retry_sleep", fast_sleep)
+
+    def fake_ctor(*args, **kwargs):
+        return _stub_client(judge_results=[])
+
+    monkeypatch.setattr("volly.loop.GeminiClient", fake_ctor)
+
+    rc = loop.main(
+        [
+            "--subject", "cat",
+            "--iterations", "1",
+            "--candidates", "1",
+            "--no-control",
+            "--out", str(tmp_path),
+        ]
+    )
+
+    assert rc == 3
+    err = capsys.readouterr().err
+    assert loop._ITER_ONE_WEDGED_BANNER in err
 
 
 async def test_run_judge_history_caps_at_four_prior_iterations(
