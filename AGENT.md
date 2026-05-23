@@ -210,3 +210,17 @@ volly/
   `test_demo_prompts_cover_every_curated_subject` guards against
   forgetting a `DEMO_PROMPTS` entry when adding a subject — the loop
   would otherwise `KeyError` at iteration 1 in demo mode.
+- `volly.ui.app.sanitize_subject(text, curated=CURATED_SUBJECTS)` is the
+  pure free-text → curated-subject helper backing the header text input
+  (spec 10 §"Subject input"). It strips/lowercases, returns the exact
+  match if present, else `difflib.get_close_matches(..., n=1,
+  cutoff=0.6)` — empty/whitespace and unrelated nouns ("airplane",
+  "dragon") return `None`. The cutoff was tuned against realistic typos:
+  "sailbot"→"sailboat", "coffe cup"/"coffeecup"→"coffee cup",
+  "heeart"→"heart", "tre"→"tree". Note "startup"→"star" is an accepted
+  false positive — the dropdown is always present as explicit override.
+  `_resolve_subject(free_text, dropdown_value)` returns
+  `(subject, notice)` where `notice` is `"warn:..."` for
+  fallback-to-dropdown, `"info:..."` for a sanitization caption, or
+  `None` when canonical/empty. The header parses the prefix and dispatches
+  to `st.warning` or `st.caption` accordingly.

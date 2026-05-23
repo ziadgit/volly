@@ -15,13 +15,16 @@ import pytest
 
 from volly.actor import Candidate
 from volly.judge import CandidateScore, JudgeResult
+from volly.loop import CURATED_SUBJECTS
 from volly.state import IterationRecord, RunHistory, win_rate
 from volly.ui.app import (
     ARM_COLORS,
+    _resolve_subject,
     _winrate_chart,
     latest_run_dir,
     load_history,
     run_root,
+    sanitize_subject,
     winrate_chart_data,
 )
 
@@ -232,3 +235,93 @@ def test_winrate_chart_color_scale_omits_missing_arm(tmp_path: Path) -> None:
     color_scale = chart.to_dict()["encoding"]["color"]["scale"]
     assert color_scale["domain"] == ["evolving"]
     assert color_scale["range"] == [ARM_COLORS["evolving"]]
+
+
+# -- sanitize_subject / _resolve_subject ----------------------------------
+
+
+@pytest.mark.parametrize("typed", sorted(CURATED_SUBJECTS))
+def test_sanitize_subject_exact_match_passthrough(typed: str) -> None:
+    assert sanitize_subject(typed) == typed
+
+
+def test_sanitize_subject_case_insensitive() -> None:
+    assert sanitize_subject("Cat") == "cat"
+    assert sanitize_subject("TREE") == "tree"
+    assert sanitize_subject("Coffee Cup") == "coffee cup"
+
+
+def test_sanitize_subject_strips_whitespace() -> None:
+    assert sanitize_subject("  cat  ") == "cat"
+    assert sanitize_subject("\tsailboat\n") == "sailboat"
+
+
+def test_sanitize_subject_empty_or_whitespace_returns_none() -> None:
+    assert sanitize_subject("") is None
+    assert sanitize_subject("   ") is None
+    assert sanitize_subject("\n\t") is None
+
+
+@pytest.mark.parametrize(
+    ("typed", "expected"),
+    [
+        ("sailbot", "sailboat"),
+        ("coffe cup", "coffee cup"),
+        ("coffeecup", "coffee cup"),
+        ("heeart", "heart"),
+        ("smily", "smiley"),
+        ("tre", "tree"),
+        ("ct", "cat"),
+    ],
+)
+def test_sanitize_subject_resolves_typo_to_curated(typed: str, expected: str) -> None:
+    assert sanitize_subject(typed) == expected
+
+
+@pytest.mark.parametrize("typed", ["airplane", "dragon", "qwerty", "xy", "robot"])
+def test_sanitize_subject_unrelated_returns_none(typed: str) -> None:
+    assert sanitize_subject(typed) is None
+
+
+def test_sanitize_subject_accepts_custom_curated_set() -> None:
+    """Helper is pure — the curated set is an arg, not a global lookup."""
+    assert sanitize_subject("apricot", curated=["apricot", "fig"]) == "apricot"
+    assert sanitize_subject("aprcot", curated=["apricot", "fig"]) == "apricot"
+    assert sanitize_subject("banana", curated=["apricot", "fig"]) is None
+
+
+def test_resolve_subject_empty_text_uses_dropdown_silently() -> None:
+    subject, notice = _resolve_subject("", "house")
+    assert subject == "house"
+    assert notice is None
+
+
+def test_resolve_subject_canonical_text_takes_precedence_no_notice() -> None:
+    """Operator typed exactly 'cat' — dropdown shows 'house' but we honor the type."""
+    subject, notice = _resolve_subject("cat", "house")
+    assert subject == "cat"
+    assert notice is None
+
+
+def test_resolve_subject_fuzzy_match_surfaces_info_notice() -> None:
+    subject, notice = _resolve_subject("sailbot", "cat")
+    assert subject == "sailboat"
+    assert notice is not None
+    assert notice.startswith("info:")
+    assert "sailbot" in notice and "sailboat" in notice
+
+
+def test_resolve_subject_unmatched_falls_back_to_dropdown_with_warn() -> None:
+    subject, notice = _resolve_subject("airplane", "house")
+    assert subject == "house"
+    assert notice is not None
+    assert notice.startswith("warn:")
+    assert "airplane" in notice and "house" in notice
+
+
+def test_resolve_subject_whitespace_only_text_uses_dropdown() -> None:
+    """Whitespace-only free-text should behave identically to an empty box —
+    no warning, no caption, the operator just didn't type anything."""
+    subject, notice = _resolve_subject("   ", "tree")
+    assert subject == "tree"
+    assert notice is None

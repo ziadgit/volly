@@ -8,8 +8,10 @@ in a single-worker ``ThreadPoolExecutor``.
 from __future__ import annotations
 
 import asyncio
+import difflib
 import os
 import time
+from collections.abc import Iterable
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 
@@ -23,10 +25,40 @@ from volly.state import RunHistory
 POLL_SECONDS = 1.0
 SUBJECTS: tuple[str, ...] = tuple(sorted(CURATED_SUBJECTS))
 
+# Cutoff for ``difflib.get_close_matches`` when sanitizing free-text subjects.
+# 0.6 is the library default — it catches the realistic operator typos
+# ("sailbot", "coffe cup", "heeart") while rejecting unrelated nouns
+# ("airplane", "dragon"). Tighter cutoffs start dropping useful typo fixes.
+_SUBJECT_MATCH_CUTOFF = 0.6
+
 # Evolving = the system learning (green, foreground). Control = the frozen
 # baseline (gray, recedes). Matches specs/09-control.md: the demo lives or
 # dies on whether the audience reads the two curves at a glance.
 ARM_COLORS: dict[str, str] = {"evolving": "#16a34a", "control": "#9ca3af"}
+
+
+def sanitize_subject(
+    text: str, curated: Iterable[str] = CURATED_SUBJECTS
+) -> str | None:
+    """Map free-text input to the closest curated subject, or ``None`` if none fit.
+
+    Spec ``specs/10-ui.md`` §"Subject input" requires that free-text typed into
+    the UI be sanitized to a curated subject before the loop receives it — the
+    loop's ``validate_subject`` only accepts members of ``CURATED_SUBJECTS``.
+    Matching is case-insensitive and tolerates surrounding whitespace; the
+    ``difflib`` cutoff is tuned so realistic typos survive but unrelated nouns
+    return ``None`` (UI falls back to the dropdown default + a warning).
+    """
+    normalized = text.strip().lower()
+    if not normalized:
+        return None
+    curated_list = sorted(curated)
+    if normalized in curated_list:
+        return normalized
+    matches = difflib.get_close_matches(
+        normalized, curated_list, n=1, cutoff=_SUBJECT_MATCH_CUTOFF
+    )
+    return matches[0] if matches else None
 
 
 def run_root() -> Path:
@@ -124,10 +156,43 @@ def _running_future() -> Future[RunHistory] | None:
     return future
 
 
+def _resolve_subject(free_text: str, dropdown_value: str) -> tuple[str, str | None]:
+    """Pick the effective subject from header inputs and the user-facing notice.
+
+    Free-text takes precedence when it sanitizes to a curated subject; an
+    empty box defers to the dropdown silently. A non-empty box with no
+    plausible match falls back to the dropdown and asks the caller to
+    surface a warning so the operator sees why their typed input was
+    ignored. Returns ``(subject, notice)`` where ``notice`` is ``None`` if
+    no message should be shown, ``"info:..."`` for a sanitization hint, or
+    ``"warn:..."`` for the unmatched-fallback warning.
+    """
+    typed = free_text.strip()
+    if not typed:
+        return dropdown_value, None
+    matched = sanitize_subject(typed)
+    if matched is None:
+        return dropdown_value, (
+            f"warn:'{typed}' isn't on the curated list and has no close match — "
+            f"using '{dropdown_value}' from the dropdown instead."
+        )
+    if matched == typed.lower():
+        return matched, None
+    return matched, f"info:Sanitized '{typed}' → '{matched}'."
+
+
 def _render_header() -> tuple[str, int, bool, bool]:
     col_subject, col_iters, col_control, col_button = st.columns([2, 1, 1, 1])
     with col_subject:
-        subject = st.selectbox("Subject", SUBJECTS, key="subject_input")
+        free_text = st.text_input(
+            "Subject (free text — fuzzy-matched to the curated list)",
+            value="",
+            placeholder="e.g. cat, sailboat, coffee cup",
+            key="subject_text_input",
+        )
+        dropdown = st.selectbox(
+            "…or pick from the curated list", SUBJECTS, key="subject_input"
+        )
     with col_iters:
         iterations = st.number_input(
             "Iterations", min_value=1, max_value=20, value=8, step=1, key="iter_input"
@@ -147,7 +212,11 @@ def _render_header() -> tuple[str, int, bool, bool]:
             start = False
         else:
             start = st.button("Run", type="primary", use_container_width=True)
-    return str(subject), int(iterations), bool(no_control), bool(start)
+    subject, notice = _resolve_subject(str(free_text), str(dropdown))
+    if notice is not None:
+        kind, _, body = notice.partition(":")
+        (st.warning if kind == "warn" else st.caption)(body)
+    return subject, int(iterations), bool(no_control), bool(start)
 
 
 def _render_prompt_panel(history: RunHistory) -> None:
