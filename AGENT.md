@@ -141,6 +141,24 @@ volly/
   network, no API key required — covers the full CLI → state.json →
   printed best-image-path pipeline for both `--no-control` and the default
   evolving+control configuration.
+- `volly.ui.app` is the Streamlit four-panel dashboard. Run with
+  `.venv/bin/streamlit run volly/ui/app.py`. It picks the most-recently-
+  modified subdir under `VOLLY_RUN_DIR` (default `./runs/`) that contains
+  `state.json` — so dropping a fresh `runs/...` dir on disk and reloading
+  is the read-only smoke test path. The Run button spawns
+  `asyncio.run(loop.run(config))` inside a module-cached single-worker
+  `ThreadPoolExecutor` (`@st.cache_resource`), stores the `Future` in
+  `st.session_state["future"]`, and polls every `POLL_SECONDS` (1s) via
+  `time.sleep` + `st.rerun()` until done. Stop is best-effort:
+  `future.cancel()` is a no-op once the worker has picked the task up,
+  but `state.json` is already persisted per-iteration by `loop.run`, so
+  partial state is on disk regardless. UI is intentionally not unit-
+  tested per spec; only the pure helpers (`latest_run_dir`,
+  `load_history`, `winrate_chart_data`) have tests in `app_test.py`.
+  `winrate_chart_data` returns an empty dict when no iterations exist
+  (caller shows "waiting"), omits the `"control"` key entirely on
+  `--no-control` runs, and pads the shorter arm with `None` so
+  `st.line_chart` accepts the dict.
 - `volly.state.RunHistory.prompt_versions` returns the evolving-arm
   `system_prompt` for every evolving iteration in order, with no
   dedup — iteration N's prompt is what the rewriter produced from
