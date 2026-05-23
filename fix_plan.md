@@ -32,6 +32,6 @@ Format: `- [ ] P0/P1/P2 — <what> — spec: <path>`
 ## Discovered
 
 <!-- Ralph appends here -->
-- [ ] P2 — `volly` script entrypoint in `pyproject.toml` points at `volly.loop:main`; `loop.py` must expose a synchronous `main()` callable (calls `asyncio.run`) — spec: specs/02-loop.md
+- [x] P2 — `volly` script entrypoint in `pyproject.toml` points at `volly.loop:main`; `loop.py` must expose a synchronous `main()` callable (calls `asyncio.run`) — spec: specs/02-loop.md
 - [x] P0 — Swap SDK from deprecated `google-generativeai` to modern `google-genai` (legacy SDK has no `ThinkingConfig` / `thinking_level`; thinking-level control is core to the actor/judge split). Updated `pyproject.toml`, `specs/01-stack.md`, `specs/03-gemini-client.md`, `AGENT.md` — spec: specs/03-gemini-client.md
 - [ ] P2 — Replace `Image.getdata()` in `renderer_test.py` with a non-deprecated accessor (Pillow 14 emits `DeprecationWarning`; swap for `img.tobytes()` chunked by mode, or `img.load()` indexed access) — spec: specs/05-renderer.md
