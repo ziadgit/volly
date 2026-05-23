@@ -27,7 +27,7 @@ Format: `- [ ] P0/P1/P2 — <what> — spec: <path>`
 - [x] P2 — Add `ralph.sh` runner with `MAX_ITERATIONS` and `RALPH_MODEL` env support — spec: specs/00-overview.md
 - [x] P2 — Ablation: text-judge vs. vision-judge on the same candidates, log delta — spec: specs/06-judge.md
 - [ ] P2 — Tune iteration count + candidate count based on observed plateau — spec: specs/02-loop.md
-- [ ] P2 — Demo-mode CLI flag that pre-warms with a known-good prompt for the rehearsed subject — spec: specs/00-overview.md
+- [x] P2 — Demo-mode CLI flag that pre-warms with a known-good prompt for the rehearsed subject — spec: specs/00-overview.md
 
 ## Discovered
 

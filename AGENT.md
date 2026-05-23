@@ -199,3 +199,14 @@ volly/
   re-reads on every redraw) never observes a half-written file. Scores
   flow through `judge.CandidateScore` so the [0.0, 1.0] range is
   validated at construction; tests that synthesize scores must clamp.
+- `volly.loop --demo` pre-warms the evolving arm's iteration-1 system
+  prompt with `DEMO_PROMPTS[subject]` (one rehearsed prompt per
+  `CURATED_SUBJECTS` entry, hard-coded in `loop.py`). Control stays on
+  `SEED_PROMPT` regardless — the comparison would be meaningless if both
+  arms started ahead. CLI flag is `--demo`, `LoopConfig.demo_mode: bool`
+  is the runtime knob; `RunHistory.seed_prompt` is still `SEED_PROMPT`
+  in both modes (it represents the canonical baseline, not the evolving
+  arm's actual starting point). Test invariant
+  `test_demo_prompts_cover_every_curated_subject` guards against
+  forgetting a `DEMO_PROMPTS` entry when adding a subject — the loop
+  would otherwise `KeyError` at iteration 1 in demo mode.

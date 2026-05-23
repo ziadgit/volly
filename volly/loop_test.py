@@ -271,6 +271,7 @@ def test_main_help_lists_required_subject_flag(capsys: pytest.CaptureFixture[str
     assert "--subject" in out
     assert "--no-control" in out
     assert "--ablate-judge" in out
+    assert "--demo" in out
 
 
 def test_parse_args_ablate_judge_defaults_off() -> None:
@@ -362,3 +363,80 @@ async def test_run_ablation_text_judge_failure_does_not_crash(
 
     assert len(history.iterations) == 1
     assert any("text-judge failed" in r.getMessage() for r in caplog.records)
+
+
+def test_demo_prompts_cover_every_curated_subject() -> None:
+    assert set(loop.DEMO_PROMPTS.keys()) == set(loop.CURATED_SUBJECTS)
+
+
+def test_demo_prompts_anchor_and_diverge_from_seed() -> None:
+    """Each rehearsed prompt has the rewriter anchor, mentions its subject,
+    differs from SEED_PROMPT, and fits under the rewriter's 4000-char cap."""
+    import re
+
+    for subject, prompt in loop.DEMO_PROMPTS.items():
+        assert prompt.startswith("You are an ASCII artist."), subject
+        assert prompt != loop.SEED_PROMPT, subject
+        assert len(prompt) <= 4000, subject
+        pattern = re.compile(rf"\b{re.escape(subject)}\b", re.IGNORECASE)
+        assert pattern.search(prompt) is not None, subject
+
+
+def test_parse_args_demo_defaults_off() -> None:
+    args = loop._parse_args(["--subject", "cat"])
+    assert args.demo is False
+    args = loop._parse_args(["--subject", "cat", "--demo"])
+    assert args.demo is True
+
+
+async def test_run_demo_mode_pre_warms_evolving_keeps_control_on_seed(
+    tmp_path: Path,
+) -> None:
+    """--demo seeds the evolving arm with DEMO_PROMPTS[subject]; control stays on seed."""
+    client = _stub_client(
+        judge_results=[
+            _judge_result(2, best=0),  # iter1 evolving
+            _judge_result(2, best=0),  # iter1 control
+        ],
+    )
+    config = loop.LoopConfig(
+        subject="coffee cup",
+        iterations=1,
+        candidates=2,
+        no_control=False,
+        out_dir=tmp_path,
+        demo_mode=True,
+    )
+
+    history = await loop.run(config, client=client)
+
+    evolving = [r for r in history.iterations if r.arm == "evolving"][0]
+    control = [r for r in history.iterations if r.arm == "control"][0]
+    assert evolving.system_prompt == loop.DEMO_PROMPTS["coffee cup"]
+    assert evolving.system_prompt != loop.SEED_PROMPT
+    assert control.system_prompt == loop.SEED_PROMPT
+
+    # Artifacts on disk reflect the rehearsed prompt for evolving, seed for control.
+    evolving_dir = tmp_path / "iter-01" / "evolving"
+    control_dir = tmp_path / "iter-01" / "control"
+    assert (evolving_dir / "prompt.txt").read_text() == loop.DEMO_PROMPTS["coffee cup"]
+    assert (control_dir / "prompt.txt").read_text() == loop.SEED_PROMPT
+
+
+async def test_run_demo_mode_off_uses_seed_for_both_arms(tmp_path: Path) -> None:
+    """Sanity: with demo_mode=False (the default), both arms start on SEED_PROMPT."""
+    client = _stub_client(
+        judge_results=[_judge_result(2, best=0), _judge_result(2, best=0)],
+    )
+    config = loop.LoopConfig(
+        subject="cat",
+        iterations=1,
+        candidates=2,
+        no_control=False,
+        out_dir=tmp_path,
+    )
+    assert config.demo_mode is False
+
+    history = await loop.run(config, client=client)
+    iter1_prompts = {r.system_prompt for r in history.iterations}
+    assert iter1_prompts == {loop.SEED_PROMPT}

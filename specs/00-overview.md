@@ -40,6 +40,21 @@
 - **The skeptic** — looks for the trick. We say: *"One model, three roles,
   preserved thoughts, vision judging, no weights changed."*
 
+## Demo mode (rehearsal safety net)
+
+The default run starts both arms from `SEED_PROMPT` — that is the on-stage
+pitch ("watch it learn from nothing"). For rehearsal and operator-side
+sanity checks, `python -m volly.loop --subject <s> --demo` swaps the
+evolving arm's iteration-1 system prompt for a curated per-subject
+"rehearsed" prompt (`volly.loop.DEMO_PROMPTS`) — one entry per curated
+subject, each shaped like a prompt the rewriter would converge toward
+after a few iterations (subject-specific structure, character set,
+centering note). The control arm still starts on `SEED_PROMPT`, so the
+two-arm comparison stays meaningful — control shows what a flat seed
+prompt produces, and evolving shows how a known-good starting point
+behaves against it. Use this when you need a predictable demo, not the
+"true zero" pitch.
+
 ## Pitch (60 seconds)
 
 > LLMs are famously bad at ASCII art — they can't reason spatially in a token

@@ -64,6 +64,10 @@ Flags:
 - `--iterations` (default 8)
 - `--candidates` (default 8)
 - `--no-control` (skip the control arm, half the API spend)
+- `--ablate-judge` (rerun a text-only judge per iter and log the top-3 delta vs. the vision judge)
+- `--demo` (pre-warm the evolving arm with `DEMO_PROMPTS[subject]`; control arm
+  stays on `SEED_PROMPT` so the comparison is still meaningful — see
+  spec 00 §"Demo mode")
 - `--out` (override `VOLLY_RUN_DIR`)
 
 ## Concurrency budget

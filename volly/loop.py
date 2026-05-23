@@ -31,6 +31,102 @@ CURATED_SUBJECTS: frozenset[str] = frozenset(
     {"cat", "house", "fish", "coffee cup", "smiley", "sailboat", "tree", "heart", "star"}
 )
 
+# Per-subject "rehearsed" prompts used by ``--demo`` to pre-warm the evolving arm.
+# Each is roughly what the rewriter would converge toward after a few iterations:
+# subject-specific structural guidance + a small character set + a centering note.
+# Control arm stays on SEED_PROMPT so the audience still sees flat-seed baseline.
+DEMO_PROMPTS: dict[str, str] = {
+    "cat": (
+        "You are an ASCII artist. Draw a cat in approximately 8-12 lines and "
+        "16-24 columns. Show two pointed ears at the top, two round eyes spaced "
+        "apart on the same row, a small nose and mouth below, and whiskers "
+        "extending horizontally from the cheeks. A simple curved body and tail "
+        "underneath help. Stick to a small, consistent character set of "
+        "()<>^v.o\\/_- and avoid mixing in dense block characters. Leave a "
+        "blank line above and below the figure for centering."
+    ),
+    "house": (
+        "You are an ASCII artist. Draw a house in approximately 8-12 lines and "
+        "18-26 columns. Start with a triangular roof made from slashes "
+        "converging at a peak, then a rectangular wall body below it built "
+        "from straight lines. Include at least one window (a small square) and "
+        "a door (a taller rectangle near the bottom). Keep all vertical edges "
+        "aligned column-wise so the walls do not skew. Use a consistent "
+        "character set of /\\|_- and basic punctuation; avoid dense fill "
+        "characters. Center the figure with blank padding rows."
+    ),
+    "fish": (
+        "You are an ASCII artist. Draw a fish in approximately 5-9 lines and "
+        "18-28 columns. Build an oval or teardrop body oriented horizontally, "
+        "with a triangular tail fin on one side made from converging "
+        "diagonals. Place a small eye (a dot or circle) near the front of the "
+        "body and a curved mouth in front of it. Optional: one or two small "
+        "fins along the body. Use light characters like ()<>{}.,o*- and keep "
+        "the silhouette closed so the body reads as a single shape. Center "
+        "with leading and trailing blank rows."
+    ),
+    "coffee cup": (
+        "You are an ASCII artist. Draw a coffee cup in approximately 7-11 "
+        "lines and 14-22 columns. Start with one or two short wavy lines at "
+        "the top to suggest rising steam, then a horizontal rim, then "
+        "vertical cup walls that curve slightly inward at the base. Attach a "
+        "small loop handle to one side of the cup, drawn with ) or }. "
+        "Optionally add a saucer line beneath the cup. Use a consistent "
+        "character set of ()|/\\~_-' and keep wall columns vertically "
+        "aligned. Pad with blank lines for centering."
+    ),
+    "smiley": (
+        "You are an ASCII artist. Draw a smiley face in approximately 7-11 "
+        "lines and 14-22 columns. Build a round outline using parentheses and "
+        "slashes for the curved sides and underscores or hyphens for the top "
+        "and bottom arcs. Inside, place two evenly-spaced eyes on the same "
+        "row (use o or *) and a curved mouth below them spanning roughly the "
+        "eye width. Keep the face symmetric left-to-right and the inner "
+        "features centered within the outline. Use a consistent light "
+        "character set and pad with blank lines for centering."
+    ),
+    "sailboat": (
+        "You are an ASCII artist. Draw a sailboat in approximately 8-12 lines "
+        "and 18-28 columns. At the top, build a triangular sail using "
+        "converging diagonals around a vertical mast in the middle. Below the "
+        "sail, draw a horizontal deck line, then a hull shaped like a shallow "
+        "trapezoid or smile underneath. Add a few short wavy lines below the "
+        "hull to suggest water. Keep the mast a single column so the sail "
+        "balances around it. Use /\\|_~-' and similar light characters; avoid "
+        "dense fills. Pad with blank rows for centering."
+    ),
+    "tree": (
+        "You are an ASCII artist. Draw a tree in approximately 8-12 lines and "
+        "14-22 columns. Build a roughly triangular or rounded canopy at the "
+        "top using leaf-like characters such as * & %, widening from the apex "
+        "downward over several rows. Below the canopy, draw a short trunk "
+        "one or two columns wide using | or ||, centered horizontally "
+        "beneath the canopy. Keep the trunk aligned with the canopy's "
+        "vertical axis so the figure does not lean. Use a consistent "
+        "character set and pad with blank rows for centering."
+    ),
+    "heart": (
+        "You are an ASCII artist. Draw a heart in approximately 6-10 lines "
+        "and 12-20 columns. Build two rounded lobes at the top using "
+        "parentheses or slashes, joined across the middle, then taper the "
+        "sides downward with diagonals that converge to a single point at "
+        "the bottom. Keep the figure left-right symmetric column by column. "
+        "Use a small character set of ()/\\_-* and avoid mixing in dense "
+        "block characters. Pad with leading and trailing blank rows so the "
+        "figure sits centered in the canvas."
+    ),
+    "star": (
+        "You are an ASCII artist. Draw a five-pointed star in approximately "
+        "7-11 lines and 14-22 columns. Start with a single point at the top, "
+        "two arms reaching outward and slightly downward, then two more arms "
+        "reaching further down and outward at the base — five tips total. "
+        "Build the silhouette from converging diagonals using / and \\, with "
+        "the outline closed so the shape reads as one figure. Keep it "
+        "left-right symmetric column by column. Pad with blank rows above "
+        "and below for centering."
+    ),
+}
+
 _log = logging.getLogger(__name__)
 
 _JUDGE_HISTORY_LIMIT = 4
@@ -47,6 +143,7 @@ class LoopConfig:
     judge_thinking: Thinking = Thinking.HIGH
     rewriter_thinking: Thinking = Thinking.HIGH
     ablate_judge: bool = False
+    demo_mode: bool = False
 
 
 def validate_subject(subject: str) -> str:
@@ -270,8 +367,10 @@ async def run(config: LoopConfig, *, client: GeminiClient | None = None) -> RunH
         seed_prompt=SEED_PROMPT,
     )
 
-    evolving_prompt = SEED_PROMPT
+    evolving_prompt = DEMO_PROMPTS[subject] if config.demo_mode else SEED_PROMPT
     control_prompt = SEED_PROMPT
+    if config.demo_mode:
+        _log.info("demo mode: evolving arm pre-warmed with rehearsed prompt for %r", subject)
 
     try:
         for iter_index in range(1, config.iterations + 1):
@@ -360,6 +459,11 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         action="store_true",
         help="also run a text-only judge per iteration and log vision-vs-text top-3 delta",
     )
+    parser.add_argument(
+        "--demo",
+        action="store_true",
+        help="pre-warm evolving arm with a rehearsed subject-specific prompt (control stays on seed)",
+    )
     parser.add_argument("--out", type=Path, default=None, help="override VOLLY_RUN_DIR")
     return parser.parse_args(argv)
 
@@ -380,6 +484,7 @@ def main(argv: list[str] | None = None) -> int:
             no_control=args.no_control,
             out_dir=args.out,
             ablate_judge=args.ablate_judge,
+            demo_mode=args.demo,
         )
         history = asyncio.run(run(config))
     except ValueError as exc:
