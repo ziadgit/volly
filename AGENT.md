@@ -391,6 +391,22 @@ volly/
   `asyncio.sleep`. Heartbeat constant is `_PATIENT_HEARTBEAT_S=30.0`; a
   sleep that lands exactly on a chunk boundary (e.g. 30s, 60s) emits no
   trailing heartbeat because `remaining > 0` is the gate.
+- **Curated subjects: shading-palette convention.** The "detailed-animal" set
+  (`capybara`, `owl`, `mushroom`) all use the same tonal palette
+  `. , : ; - = + * # @` (light→dark) in their `DEMO_PROMPTS` entries —
+  deliberate so the rewriter sees consistent palette vocabulary across
+  shaded subjects and the (pending) judge-rubric upgrade can score
+  "texture / character variety" against a stable palette. When adding a
+  new silhouette/shaded subject, reuse this palette verbatim in the
+  rehearsed prompt; the lighter punctuation-only set used by `cat`/
+  `heart`/`star` is the right choice for line-art subjects. Either way,
+  the two test invariants `test_curated_subjects_match_overview_list` and
+  `test_demo_prompts_cover_every_curated_subject` lock CURATED_SUBJECTS
+  and DEMO_PROMPTS keys to the same set — adding to one without the other
+  fails the suite, so the two `fix_plan.md` items must land together.
+  `volly.ui.app.SUBJECTS = tuple(sorted(CURATED_SUBJECTS))` is computed
+  at import, so the Streamlit dropdown picks up new subjects automatically
+  with no UI edit.
 - `volly.loop --tier {free,paid}` is the operational-mode preset bundle
   from spec 02 §"Tier presets". Preset dict `_TIER_PRESETS` lives at
   module top: `free` = `{rpm: 4, candidates: 3, no_control: True,

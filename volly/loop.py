@@ -39,6 +39,8 @@ CURATED_SUBJECTS: frozenset[str] = frozenset(
         "heart",
         "star",
         "capybara",
+        "owl",
+        "mushroom",
     }
 )
 
@@ -147,6 +149,31 @@ DEMO_PROMPTS: dict[str, str] = {
         "lighter on the belly and around the muzzle, denser along the back "
         "and shadow side. Keep the outline closed so the silhouette reads "
         "as one solid animal. Pad with blank rows for centering."
+    ),
+    "owl": (
+        "You are an ASCII artist. Draw an owl in approximately 10-14 lines "
+        "and 18-28 columns — the larger canvas lets the round disc-faced "
+        "silhouette and plumage texture read clearly. Build a pear-shaped "
+        "body sitting upright on short stubby legs or a perched bar, with "
+        "two wide round eyes high on the head, a small triangular beak "
+        "centered between them, and small angled ear tufts at the top "
+        "corners. Use a tonal palette `. , : ; - = + * # @` (roughly light "
+        "to dark) to suggest feather shading — lighter on the breast and "
+        "facial disc, denser along the wings and crown. Keep the silhouette "
+        "closed so the figure reads as one solid shape. Pad with blank rows "
+        "for centering."
+    ),
+    "mushroom": (
+        "You are an ASCII artist. Draw a mushroom in approximately 10-14 "
+        "lines and 16-26 columns — the larger canvas lets you shade the "
+        "cap's dome and suggest gill texture under it. Build a rounded "
+        "dome-shaped cap on top, slightly overhanging a short straight stem "
+        "below it, and ground the figure with a short ground line or two "
+        "small grass tufts at the base. Use a tonal palette `. , : ; - = + "
+        "* # @` (roughly light to dark) for cap shading — lightest at the "
+        "crown, denser along the lower curve and the underside; a few small "
+        "dots scattered on the cap are optional. Keep the outline closed "
+        "and pad with blank rows for centering."
     ),
 }
 

@@ -63,6 +63,8 @@ def test_curated_subjects_match_overview_list() -> None:
             "heart",
             "star",
             "capybara",
+            "owl",
+            "mushroom",
         }
     )
 
