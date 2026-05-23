@@ -124,6 +124,16 @@ volly/
   WARNING but does NOT rewrite. Word-boundary regex means "cat" matches
   "cat"/"Cat"/"CAT" but not "catalog", and multi-word subjects like
   "coffee cup" work the same way.
+- `volly.loop.run` orchestrates evolving + control arms in parallel via
+  `asyncio.gather` per iteration, then runs the rewriter sequentially on
+  the evolving arm's `JudgeResult`. Run-dir layout is
+  `iter-NN/<arm>/{cand-MM.png, best.png, prompt.txt}` plus `state.json`
+  at the run-dir root, persisted atomically after every iteration. CLI
+  subject is normalized + validated against `CURATED_SUBJECTS`; off-list
+  subjects exit 2. When the actor returns < k candidates, missing slots
+  are padded from the prior iteration's best `Candidate` for that arm —
+  iteration 1 with shortfall just records a shorter list. Judge history
+  is per-arm and capped at the last 4 iterations.
 - `volly.state.RunHistory.prompt_versions` returns the evolving-arm
   `system_prompt` for every evolving iteration in order, with no
   dedup — iteration N's prompt is what the rewriter produced from
