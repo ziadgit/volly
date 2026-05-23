@@ -1,0 +1,48 @@
+[project]
+name = "volly"
+version = "0.0.1"
+description = "Self-improving ASCII art via system prompt learning with Gemini 3.5 Flash."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.11"
+dependencies = [
+  "google-generativeai>=0.8",
+  "Pillow>=10",
+  "streamlit>=1.30",
+  "anyio>=4",
+  "pydantic>=2",
+  "python-dotenv>=1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8",
+  "pytest-asyncio>=0.23",
+  "ruff>=0.5",
+]
+
+[project.scripts]
+volly = "volly.loop:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["volly*"]
+exclude = ["specs*", "tests*", "runs*", "logs*"]
+
+[tool.pytest.ini_options]
+python_files = ["*_test.py"]
+asyncio_mode = "auto"
+addopts = "-ra"
+testpaths = ["volly", "tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = ["runs", "logs", ".venv"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "W"]
+ignore = ["E501"]

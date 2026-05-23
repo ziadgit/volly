@@ -1,0 +1,34 @@
+# fix_plan.md
+
+Prioritized backlog. Ralph picks the topmost unchecked item per loop.
+
+Format: `- [ ] P0/P1/P2 — <what> — spec: <path>`
+
+## P0 — bootstrap
+
+- [ ] P0 — Scaffold `pyproject.toml` with deps (google-generativeai, Pillow, streamlit, pytest, ruff, anyio) and the `volly` package skeleton (`volly/__init__.py`) — spec: specs/01-stack.md
+- [ ] P0 — Implement `volly/gemini_client.py` — async wrapper for Gemini Flash 3.5 with thinking-level control (Low/Medium/High), JSON-mode helper, multimodal helper — spec: specs/03-gemini-client.md
+- [ ] P0 — Implement `volly/renderer.py` — ASCII text → PNG via PIL, fixed canvas, monospace font, black-on-white — spec: specs/05-renderer.md
+- [ ] P0 — Implement `volly/actor.py` — generate N candidates in parallel via `asyncio.gather` at Low thinking — spec: specs/04-actor.md
+- [ ] P0 — Implement `volly/judge.py` — multimodal call: subject + N rendered images + current prompt → ranking with per-candidate scores + critique + suggested prompt deltas — spec: specs/06-judge.md
+- [ ] P0 — Implement `volly/rewriter.py` — current prompt + judge critique → new prompt, at High thinking — spec: specs/07-rewriter.md
+- [ ] P0 — Implement `volly/state.py` — `IterationState`, `RunHistory`, win-rate metric, prompt diffs, JSON persistence — spec: specs/08-state.md
+- [ ] P0 — Implement `volly/loop.py` — orchestrate generate→render→judge→rewrite, run evolving arm + static control arm side-by-side — spec: specs/02-loop.md
+- [ ] P0 — End-to-end smoke test: `python -m volly.loop --subject cat --iterations 2` writes a valid run-history JSON and prints a best-of-8 image path — spec: specs/02-loop.md
+
+## P1 — UI & control
+
+- [ ] P1 — Implement `volly/ui/app.py` Streamlit dashboard with the four panels (evolving prompt + diffs, current best, win-rate chart, judge reasoning) — spec: specs/10-ui.md
+- [ ] P1 — Wire the static control arm into the UI chart so evolving vs. flat is visually obvious — spec: specs/09-control.md
+- [ ] P1 — Subject sanitizer / curated list (cat, house, fish, coffee cup, smiley, sailboat, tree, heart, star) — spec: specs/00-overview.md
+
+## P2 — polish
+
+- [ ] P2 — Add `ralph.sh` runner with `MAX_ITERATIONS` and `RALPH_MODEL` env support — spec: specs/00-overview.md
+- [ ] P2 — Ablation: text-judge vs. vision-judge on the same candidates, log delta — spec: specs/05-judge.md
+- [ ] P2 — Tune iteration count + candidate count based on observed plateau — spec: specs/02-loop.md
+- [ ] P2 — Demo-mode CLI flag that pre-warms with a known-good prompt for the rehearsed subject — spec: specs/00-overview.md
+
+## Discovered
+
+<!-- Ralph appends here -->
