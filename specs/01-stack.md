@@ -9,7 +9,7 @@ Anything else is a distraction at a hackathon.
 
 | Package              | Why                                                  |
 | -------------------- | ---------------------------------------------------- |
-| `google-generativeai`| Official Gemini SDK, async client, multimodal in     |
+| `google-genai`       | Official Gemini SDK (modern, supports thinking levels)|
 | `Pillow`             | ASCII text → PNG rendering (fixed-grid, monospace)   |
 | `streamlit`          | Four-panel UI in minutes, hot-reload friendly        |
 | `anyio`              | Structured concurrency on top of asyncio             |
@@ -37,7 +37,7 @@ name = "volly"
 version = "0.0.1"
 requires-python = ">=3.11"
 dependencies = [
-  "google-generativeai>=0.8",
+  "google-genai>=1.0",
   "Pillow>=10",
   "streamlit>=1.30",
   "anyio>=4",
@@ -65,9 +65,11 @@ line-length = 100
 
 ## Why these choices
 
-- **`google-generativeai` over LangChain/etc.** — direct path to Flash 3.5's
-  thinking-level config and parallel calls. No abstraction tax at hackathon
-  speed.
+- **`google-genai` over LangChain/etc.** — direct path to Flash 3.5's
+  thinking-level config and parallel calls. The legacy `google-generativeai`
+  package is deprecated and lacks `ThinkingConfig`; the modern `google-genai`
+  SDK exposes `ThinkingLevel.LOW/MEDIUM/HIGH` natively. No abstraction tax
+  at hackathon speed.
 - **Streamlit over Next.js** — four panels in a single Python file, hot
   reload, no JS toolchain to debug under stage lights.
 - **Pillow over Skia/cairo** — ASCII rendering is trivial; Pillow ships with

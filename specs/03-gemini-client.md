@@ -1,7 +1,8 @@
 # 03 — Gemini Client
 
-Thin async wrapper around `google-generativeai` for Flash 3.5. The only
-module that touches the SDK directly. Every other module imports from here.
+Thin async wrapper around `google-genai` (the modern Gemini SDK) for
+Flash 3.5. The only module that touches the SDK directly. Every other
+module imports from here.
 
 ## Why a wrapper
 
@@ -54,19 +55,27 @@ class GeminiClient:
 
 ## Behavior
 
-- **Thinking config:** map `Thinking.LOW/MEDIUM/HIGH` to the Gemini SDK's
-  thinking-budget config. Verify exact field name from the SDK at impl
-  time — that's a known unknown.
-- **JSON mode:** use the SDK's `response_mime_type="application/json"` and
-  `response_schema=` if available; otherwise wrap with an explicit "respond
-  ONLY with JSON conforming to:" preamble.
-- **Validation:** parse with the provided pydantic schema. On
-  `ValidationError`, retry up to `max_retries` with the parser error
-  appended to the user message.
-- **Retries:** tenacity-style retry with jittered exponential backoff on
-  429, 500, 503. Three attempts total. Surface anything else.
-- **Image encoding:** accept `PIL.Image.Image`; convert internally to the
-  SDK's expected format (PNG bytes via `BytesIO`).
+- **Thinking config:** map `Thinking.LOW/MEDIUM/HIGH` to
+  `google.genai.types.ThinkingConfig(thinking_level=ThinkingLevel.LOW
+  /MEDIUM/HIGH)`, set on `GenerateContentConfig.thinking_config`. The
+  SDK also exposes `ThinkingLevel.MINIMAL`; we do not use it.
+- **Async call shape:** `client.aio.models.generate_content(
+  model=..., contents=..., config=GenerateContentConfig(
+  system_instruction=..., temperature=..., thinking_config=...))`.
+  No `ChatSession` — each call is independent.
+- **JSON mode:** set `response_mime_type="application/json"` and
+  `response_schema=<pydantic model class>` on `GenerateContentConfig`.
+  The SDK accepts pydantic v2 model classes directly for `response_schema`.
+- **Validation:** parse the returned text with the provided pydantic
+  schema. On `ValidationError`, retry up to `max_retries` with the parser
+  error appended to the user message.
+- **Retries:** retry with jittered exponential backoff on 429, 500, 503.
+  Three attempts total. Surface anything else. Use a small handwritten
+  retry helper — no `tenacity` dep.
+- **Image encoding:** accept `PIL.Image.Image`; convert internally to
+  `types.Part.from_bytes(mime_type="image/png", data=<PNG bytes via
+  BytesIO>)`. User content is then a list mixing the user-text string
+  and image parts.
 
 ## Auth
 

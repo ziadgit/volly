@@ -33,3 +33,4 @@ Format: `- [ ] P0/P1/P2 — <what> — spec: <path>`
 
 <!-- Ralph appends here -->
 - [ ] P2 — `volly` script entrypoint in `pyproject.toml` points at `volly.loop:main`; `loop.py` must expose a synchronous `main()` callable (calls `asyncio.run`) — spec: specs/02-loop.md
+- [x] P0 — Swap SDK from deprecated `google-generativeai` to modern `google-genai` (legacy SDK has no `ThinkingConfig` / `thinking_level`; thinking-level control is core to the actor/judge split). Updated `pyproject.toml`, `specs/01-stack.md`, `specs/03-gemini-client.md`, `AGENT.md` — spec: specs/03-gemini-client.md

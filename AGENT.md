@@ -10,7 +10,7 @@ rewriting its own system prompt from natural-language critique. Karpathy's
 ## Stack
 
 - **Language:** Python 3.11+
-- **LLM:** Gemini 3.5 Flash (`gemini-3.5-flash`) via `google-generativeai`
+- **LLM:** Gemini 3.5 Flash (`gemini-3.5-flash`) via `google-genai`
   - Low thinking → actor (fast parallel candidate generation)
   - High thinking → judge & rewriter (careful ranking and editing)
 - **Async:** `asyncio` — all model calls are parallel via `asyncio.gather`
@@ -83,3 +83,9 @@ volly/
 - `pytest -x -q` returns exit code 5 (no tests collected) until the first
   `*_test.py` lands. Treat 5 as a pass during the scaffold-era loops; once
   any test file exists, 5 means real breakage.
+- SDK is `google-genai` (modern, package import `google.genai`), NOT
+  `google-generativeai` (deprecated, no `ThinkingConfig`). The original
+  spec named the legacy package — corrected because the deprecated SDK
+  lacks `thinking_budget` / `thinking_level` and we need per-call
+  Low/Medium/High control for the actor vs. judge split. Async entry
+  point is `client.aio.models.generate_content(model, contents, config)`.
