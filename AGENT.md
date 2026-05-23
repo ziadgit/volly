@@ -124,3 +124,14 @@ volly/
   WARNING but does NOT rewrite. Word-boundary regex means "cat" matches
   "cat"/"Cat"/"CAT" but not "catalog", and multi-word subjects like
   "coffee cup" work the same way.
+- `volly.state.RunHistory.prompt_versions` returns the evolving-arm
+  `system_prompt` for every evolving iteration in order, with no
+  dedup — iteration N's prompt is what the rewriter produced from
+  iteration N-1 (or the seed for N=1). `diff(i)` returns the unified
+  diff from versions[i-1] to versions[i] with headers `prompt v{i-1}`
+  / `prompt v{i}`; `i < 1` or `i >= len(versions)` returns "", and so
+  do consecutive identical prompts. `save()` writes `state.json.tmp`
+  under `run_dir` then `os.replace` to `state.json` so Streamlit (which
+  re-reads on every redraw) never observes a half-written file. Scores
+  flow through `judge.CandidateScore` so the [0.0, 1.0] range is
+  validated at construction; tests that synthesize scores must clamp.

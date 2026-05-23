@@ -12,7 +12,7 @@ Format: `- [ ] P0/P1/P2 — <what> — spec: <path>`
 - [x] P0 — Implement `volly/actor.py` — generate N candidates in parallel via `asyncio.gather` at Low thinking — spec: specs/04-actor.md
 - [x] P0 — Implement `volly/judge.py` — multimodal call: subject + N rendered images + current prompt → ranking with per-candidate scores + critique + suggested prompt deltas — spec: specs/06-judge.md
 - [x] P0 — Implement `volly/rewriter.py` — current prompt + judge critique → new prompt, at High thinking — spec: specs/07-rewriter.md
-- [ ] P0 — Implement `volly/state.py` — `IterationState`, `RunHistory`, win-rate metric, prompt diffs, JSON persistence — spec: specs/08-state.md
+- [x] P0 — Implement `volly/state.py` — `IterationState`, `RunHistory`, win-rate metric, prompt diffs, JSON persistence — spec: specs/08-state.md
 - [ ] P0 — Implement `volly/loop.py` — orchestrate generate→render→judge→rewrite, run evolving arm + static control arm side-by-side — spec: specs/02-loop.md
 - [ ] P0 — End-to-end smoke test: `python -m volly.loop --subject cat --iterations 2` writes a valid run-history JSON and prints a best-of-8 image path — spec: specs/02-loop.md
 
