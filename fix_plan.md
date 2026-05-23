@@ -4,6 +4,15 @@ Prioritized backlog. Ralph picks the topmost unchecked item per loop.
 
 Format: `- [ ] P0/P1/P2 — <what> — spec: <path>`
 
+## Status (regenerated 2026-05-23)
+
+Backlog is in steady state: every spec-mandated feature has shipped (235
+tests pass, ruff clean, import OK). The single remaining unchecked item
+(`Tune iteration count + candidate count`) is `blocked-by` operator data
+from a real Gemini-backed run — not actionable from code alone. The
+**Discovered** section at the bottom carries one fresh item from this
+loop's spec audit.
+
 ## P0 — rate-limit hardening (discovered 2026-05-23 from a real Gemini run; demo unrunnable until these land)
 
 - [x] P0 — Add a global async **RPM limiter** to `volly/gemini_client.py`: token bucket shared across actor/judge/rewriter so a 19-call iteration doesn't burst past the per-minute ceiling. Configurable via `--rpm` CLI flag (default), `GEMINI_RPM` env (override), constructor arg (override env). Free-tier value is **5**. Limiter is per-`GeminiClient` instance and lives in the client module — every `_generate` acquires a token before the SDK call — spec: specs/03-gemini-client.md
@@ -54,3 +63,4 @@ Format: `- [ ] P0/P1/P2 — <what> — spec: <path>`
 - [x] P0 — Swap SDK from deprecated `google-generativeai` to modern `google-genai` (legacy SDK has no `ThinkingConfig` / `thinking_level`; thinking-level control is core to the actor/judge split). Updated `pyproject.toml`, `specs/01-stack.md`, `specs/03-gemini-client.md`, `AGENT.md` — spec: specs/03-gemini-client.md
 - [x] P2 — Replace `Image.getdata()` in `renderer_test.py` with a non-deprecated accessor (Pillow 14 emits `DeprecationWarning`; swap for `img.tobytes()` chunked by mode, or `img.load()` indexed access) — spec: specs/05-renderer.md
 - [x] P1 — UI subject input: add free-text entry with closest-match sanitization to `CURATED_SUBJECTS` ahead of the existing dropdown — spec 10 §"Subject input" says "Free-text input sanitized to a curated subject (closest match) before the loop receives it", but `volly/ui/app.py` currently exposes only `st.selectbox(SUBJECTS)`. Sanitizer should be a pure helper (`difflib.get_close_matches` or similar) with its own test in `app_test.py`; off-list strings with no plausible match fall back to the dropdown default and surface a `st.warning` — spec: specs/10-ui.md
+- [ ] P2 — **Spec wording drift on judge fallback.** `specs/02-loop.md` §"Failure handling" line 111 says "Judge returns malformed JSON twice in a row → fall back to **text-only judge** for that iteration only", and `specs/06-judge.md` line 46 says "fall back to **text-judge mode** (`prompt_suggestions=[]`, `scores=uniform`)" — but the actual `volly/judge.py:_fallback_result` returns uniform 0.5 scores WITHOUT invoking text-judge. The phrase "text-judge mode" now collides with the `--ablate-judge` text-judge feature (spec 06 §"Ablation hook"), making the failure-handling intent ambiguous: is the fallback supposed to call `rank(..., include_images=False, texts=[...])` (real text-judge, could itself 429) or just synthesize uniform scores (current, safer)? Code's choice (uniform synthesize) is the right one for demo robustness — a text-judge fallback that itself fails would cascade. Fix the SPEC, not the code: rewrite spec 02 line 111 to "fall back to **uniform 0.5 scores** for that iteration only" and spec 06 line 46 to "fall back to **uniform fallback** (...)" — keep the parenthetical, drop the misleading "text-judge mode" phrase. Cross-reference the ablation hook so future readers don't conflate the two paths — spec: specs/02-loop.md, specs/06-judge.md

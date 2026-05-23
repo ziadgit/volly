@@ -440,6 +440,20 @@ volly/
   default, `_MIN_FONT_SIZE`, the "down to Xpt" line in `render()`'s
   docstring, AND the overflow test in lockstep, and re-skim
   `specs/05-renderer.md` line 13/24 for the prescribed values.
+- **Judge-fallback terminology trap.** `volly/judge.py:_fallback_result`
+  (ValidationError path) and `_api_fallback_result` (APIError path) BOTH
+  synthesize uniform 0.5 scores — they do NOT invoke text-judge. Spec 02
+  §"Failure handling" and spec 06 §"Behavior" both contain the phrase
+  "text-judge mode" / "text-only judge" when describing this fallback,
+  but the parenthetical "scores=uniform" is what the code actually does
+  and what we want for demo robustness (a cascading text-judge fallback
+  could itself 429). The literal `--ablate-judge` text-judge path
+  (`rank(..., include_images=False, texts=[...])`) is a SEPARATE feature
+  for the ablation talking point — never invoked from the failure path.
+  If you ever try to "implement" the spec's literal text-judge fallback,
+  STOP — it's a spec wording bug tracked in `fix_plan.md` Discovered, not
+  a missing feature. The wording fix is to rewrite both spec lines to
+  say "uniform 0.5 fallback" instead of "text-judge mode".
 - `volly.judge` system prompts (`_SYSTEM_TEMPLATE` for vision-mode and
   `_SYSTEM_TEMPLATE_TEXT` for the `--ablate-judge` text-only path) score
   six axes, "weighing equally", in the order spec 06 §"System prompt for
