@@ -75,6 +75,47 @@ async def test_rank_system_prompt_carries_subject_count_and_artist_prompt() -> N
     assert "you draw stuff" in system
 
 
+async def test_rank_system_prompt_carries_six_axis_rubric() -> None:
+    images = [_img() for _ in range(2)]
+    mock = AsyncMock(return_value=_ok_result(2))
+    client = _client(mock)
+
+    await rank(client, "owl", "be an artist", images)
+
+    system = mock.await_args.args[0]
+    assert "weighing equally" in system
+    assert "recognizability of the subject" in system
+    assert "composition and proportions" in system
+    assert "use of negative space" in system
+    assert "shading depth and tonal range" in system
+    assert ". , : ; - = + * # @" in system
+    assert "level of detail" in system
+    assert "character-set variety" in system
+    assert "technique" in system
+    assert "subject-name repetition" in system
+
+
+async def test_rank_text_mode_system_prompt_carries_six_axis_rubric() -> None:
+    images = [_img() for _ in range(2)]
+    texts = ["AA", "BB"]
+    mock = AsyncMock(return_value=_ok_result(2))
+    client = _client(mock)
+
+    await rank(client, "mushroom", "be an artist", images, include_images=False, texts=texts)
+
+    system = mock.await_args.args[0]
+    assert "weighing equally" in system
+    assert "judging from the raw text alone" in system
+    assert "recognizability of the subject" in system
+    assert "composition and proportions" in system
+    assert "use of negative space" in system
+    assert "shading depth and tonal range" in system
+    assert ". , : ; - = + * # @" in system
+    assert "level of detail" in system
+    assert "character-set variety" in system
+    assert "subject-name repetition" in system
+
+
 async def test_rank_truncates_history_to_last_four() -> None:
     images = [_img() for _ in range(2)]
     history = [

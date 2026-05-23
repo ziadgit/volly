@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.png" alt="Volly — ASCII art that teaches itself to draw" width="420" />
+</p>
+
 # Volly
 
 **ASCII art that teaches itself to draw — no fine-tuning, no training data, no gradient updates.**
