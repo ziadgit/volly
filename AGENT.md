@@ -309,6 +309,25 @@ volly/
   what we have. The `run()` `except Exception:` block re-saves `state.json`
   on the wedge path, so a wedged run leaves an empty-iterations state.json
   on disk plus whatever iter-01/ artifacts the final failed attempt wrote.
+- `volly.gemini_client` emits operator-visible throttle/retry logs at INFO
+  (NOT WARNING — rate limiting is normal, the noise floor matters for the
+  demo). Two log lines, both formatted with `_log = logging.getLogger(
+  __name__)`: (1) `gemini: throttled rpm=R queued=Q eta≈Ts` from inside
+  `_RpmLimiter.acquire` on any iteration that has to sleep waiting for a
+  token; squelched to once per `_THROTTLE_LOG_SQUELCH_S` (=1.0) per limiter
+  instance via `_last_throttle_log_at` initialized to `-math.inf` so the
+  first sleeping acquire always logs. `queued` is a self-inclusive counter
+  (`_queued` incremented on acquire entry, decremented on exit), so a
+  solo throttled caller still reads `queued=1`. (2) `gemini: 429 retry in
+  Xs (server)` from `_generate` when a server `RetryInfo.retryDelay` is
+  honored; logged before `_sleep_retry_delay` so an operator sees the
+  wait coming. The exponential-backoff fallback (`_sleep_backoff`,
+  triggered when no RetryInfo is present) deliberately does NOT log —
+  it's a sub-second sleep and would just be noise. Cap-exceeded re-raises
+  also do NOT log (`test_generate_does_not_log_retry_when_exceeding_cap`
+  pins this). Throttle squelching is tested with a `_FakeClock` that
+  honestly ticks: rpm=120 → 0.5s/token, three back-to-back sleeping
+  acquires at clock=0/0.5/1.0 produce exactly two log lines.
 - **Judge + rewriter both swallow `google.genai.errors.APIError`** (and
   its subclasses `ClientError`/`ServerError`, by `except APIError`) so
   the loop survives quota/transient failures the client retry could not

@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import asyncio
 import io
+import logging
+import math
 import os
 import random
 import re
@@ -24,6 +26,8 @@ from google.genai import errors as genai_errors
 from google.genai import types
 from pydantic import BaseModel, ValidationError
 
+_log = logging.getLogger(__name__)
+
 _DEFAULT_MODEL = "gemini-3.5-flash"
 _DEFAULT_RPM = 30
 _RETRY_STATUSES = frozenset({429, 500, 503})
@@ -31,6 +35,7 @@ _MAX_TRANSPORT_ATTEMPTS = 3
 _MAX_RETRY_WAIT_S = 90.0
 _RETRY_INFO_TYPE = "type.googleapis.com/google.rpc.RetryInfo"
 _RETRY_DELAY_RE = re.compile(r"^(\d+(?:\.\d+)?)s$")
+_THROTTLE_LOG_SQUELCH_S = 1.0
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -79,23 +84,41 @@ class _RpmLimiter:
         self._tokens = float(rpm)
         self._last_refill = clock()
         self._lock = asyncio.Lock()
+        self._queued = 0
+        self._last_throttle_log_at = -math.inf
 
     async def acquire(self) -> None:
-        async with self._lock:
-            while True:
-                now = self._clock()
-                elapsed = now - self._last_refill
-                if elapsed > 0:
-                    self._tokens = min(
-                        self._capacity,
-                        self._tokens + elapsed * self._refill_per_sec,
-                    )
-                    self._last_refill = now
-                if self._tokens >= 1.0:
-                    self._tokens -= 1.0
-                    return
-                wait = (1.0 - self._tokens) / self._refill_per_sec
-                await self._sleep(wait)
+        self._queued += 1
+        try:
+            async with self._lock:
+                while True:
+                    now = self._clock()
+                    elapsed = now - self._last_refill
+                    if elapsed > 0:
+                        self._tokens = min(
+                            self._capacity,
+                            self._tokens + elapsed * self._refill_per_sec,
+                        )
+                        self._last_refill = now
+                    if self._tokens >= 1.0:
+                        self._tokens -= 1.0
+                        return
+                    wait = (1.0 - self._tokens) / self._refill_per_sec
+                    self._maybe_log_throttle(now, wait)
+                    await self._sleep(wait)
+        finally:
+            self._queued -= 1
+
+    def _maybe_log_throttle(self, now: float, eta: float) -> None:
+        if now - self._last_throttle_log_at < _THROTTLE_LOG_SQUELCH_S:
+            return
+        self._last_throttle_log_at = now
+        _log.info(
+            "gemini: throttled rpm=%d queued=%d eta≈%.1fs",
+            self.rpm,
+            self._queued,
+            eta,
+        )
 
 
 class Thinking(StrEnum):
@@ -235,6 +258,7 @@ class GeminiClient:
                     if total_retry_wait + planned > _MAX_RETRY_WAIT_S:
                         raise
                     total_retry_wait += planned
+                    _log.info("gemini: 429 retry in %.1fs (server)", planned)
                     await _sleep_retry_delay(planned)
                 else:
                     await _sleep_backoff(attempt)

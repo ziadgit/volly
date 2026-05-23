@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -513,3 +514,105 @@ async def test_generate_raises_when_cumulative_retry_delay_exceeds_cap(
     # First 429: slept 50s. Second 429: would push total to 100s > 90s cap → raise.
     assert mock.await_count == 2
     assert retry_sleep.await_count == 1
+
+
+# --- Throttle + 429-retry logging ----------------------------------------
+
+
+async def test_limiter_logs_throttle_when_sleeping(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """First sleeping acquire must emit an INFO throttled line."""
+    limiter, _clock, _sleeps = _build_limiter(rpm=60)
+    for _ in range(60):
+        await limiter.acquire()  # exhaust bucket
+
+    with caplog.at_level(logging.INFO, logger="volly.gemini_client"):
+        await limiter.acquire()  # this one must sleep
+
+    throttled = [r for r in caplog.records if "throttled" in r.getMessage()]
+    assert len(throttled) == 1
+    msg = throttled[0].getMessage()
+    assert "rpm=60" in msg
+    assert "queued=1" in msg
+    assert "eta" in msg
+    assert throttled[0].levelno == logging.INFO
+
+
+async def test_limiter_does_not_log_when_token_available(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Acquires that do not sleep must not emit a throttle line."""
+    limiter, _clock, _sleeps = _build_limiter(rpm=5)
+    with caplog.at_level(logging.INFO, logger="volly.gemini_client"):
+        for _ in range(5):
+            await limiter.acquire()
+    throttled = [r for r in caplog.records if "throttled" in r.getMessage()]
+    assert throttled == []
+
+
+async def test_limiter_squelches_throttle_logs_within_one_second(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A second sleeping acquire inside the 1s window must be squelched.
+
+    rpm=120 → 2 tokens/sec → each token costs 0.5s. After exhausting the
+    bucket, three back-to-back acquires fire at clock=0.0, 0.5, 1.0. With
+    a 1s squelch window the first and third log; the middle is dropped.
+    """
+    limiter, _clock, _sleeps = _build_limiter(rpm=120)
+    for _ in range(120):
+        await limiter.acquire()  # exhaust bucket, no logs (no sleep yet)
+
+    with caplog.at_level(logging.INFO, logger="volly.gemini_client"):
+        await limiter.acquire()  # logs at clock=0
+        await limiter.acquire()  # at clock=0.5 → squelched (Δ=0.5 < 1.0)
+        await limiter.acquire()  # at clock=1.0 → logs (Δ=1.0 ≥ 1.0)
+
+    throttled = [r for r in caplog.records if "throttled" in r.getMessage()]
+    assert len(throttled) == 2
+
+
+async def test_generate_logs_server_retry_delay_at_info(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Honoring a server retryDelay must emit one INFO line, not WARNING."""
+    client = _make_client()
+    mock = AsyncMock(side_effect=[_quota_error("3s"), _response(text="ok")])
+    _install_generate(client, mock)
+    monkeypatch.setattr("volly.gemini_client._retry_delay_jitter", lambda: 0.5)
+    monkeypatch.setattr(
+        "volly.gemini_client._sleep_retry_delay", AsyncMock(return_value=None)
+    )
+
+    with caplog.at_level(logging.INFO, logger="volly.gemini_client"):
+        out = await client.text("sys", "hi")
+
+    assert out == "ok"
+    retry_logs = [r for r in caplog.records if "429 retry in" in r.getMessage()]
+    assert len(retry_logs) == 1
+    assert "3.5s" in retry_logs[0].getMessage()
+    assert "(server)" in retry_logs[0].getMessage()
+    assert retry_logs[0].levelno == logging.INFO
+
+
+async def test_generate_does_not_log_retry_when_exceeding_cap(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If we bail without sleeping, no 429-retry line should appear."""
+    client = _make_client()
+    mock = AsyncMock(side_effect=_quota_error("100s"))
+    _install_generate(client, mock)
+    monkeypatch.setattr("volly.gemini_client._retry_delay_jitter", lambda: 0.0)
+    monkeypatch.setattr(
+        "volly.gemini_client._sleep_retry_delay", AsyncMock(return_value=None)
+    )
+
+    with caplog.at_level(logging.INFO, logger="volly.gemini_client"):
+        with pytest.raises(genai_errors.APIError):
+            await client.text("sys", "hi")
+
+    retry_logs = [r for r in caplog.records if "429 retry in" in r.getMessage()]
+    assert retry_logs == []
