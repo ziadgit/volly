@@ -16,6 +16,7 @@ from volly.gemini_client import (
     GeminiClient,
     Thinking,
     _parse_retry_delay,
+    _patient_sleep,
     _resolve_rpm,
     _RpmLimiter,
 )
@@ -32,10 +33,14 @@ def _clean_rpm_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("GEMINI_RPM", raising=False)
 
 
-def _make_client(rpm: int | None = None) -> GeminiClient:
+def _make_client(
+    rpm: int | None = None, *, max_retry_wait_s: float = 90.0
+) -> GeminiClient:
     with patch("volly.gemini_client.genai.Client") as ctor:
         ctor.return_value = MagicMock()
-        return GeminiClient(api_key="test-key", rpm=rpm)
+        return GeminiClient(
+            api_key="test-key", rpm=rpm, max_retry_wait_s=max_retry_wait_s
+        )
 
 
 def _response(*, text: str = "", parsed: Any = None) -> MagicMock:
@@ -476,24 +481,83 @@ async def test_generate_falls_back_to_backoff_without_retry_info(
     assert backoff.await_count == 1
 
 
-async def test_generate_raises_when_retry_delay_exceeds_cap(
+async def test_generate_enters_patient_mode_when_retry_delay_exceeds_cap(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A retryDelay larger than the 90s cap must surface the APIError to callers."""
+    """A retryDelay above ``max_retry_wait_s`` must NOT raise — it must wait.
+
+    Spec 03 §"Patient mode": when the server itself says wait longer than our
+    cap, we know we're quota-locked. Don't crash; sleep with heartbeats and
+    retry so a sponsorship/hourly-reset operator can outlive the window.
+    """
     client = _make_client()
     quota = _quota_error("100s")
-    mock = AsyncMock(side_effect=quota)
+    ok = _response(text="finally")
+    mock = AsyncMock(side_effect=[quota, ok])
     _install_generate(client, mock)
     monkeypatch.setattr("volly.gemini_client._retry_delay_jitter", lambda: 0.0)
+    patient_sleep = AsyncMock(return_value=None)
+    monkeypatch.setattr("volly.gemini_client._patient_sleep", patient_sleep)
     retry_sleep = AsyncMock(return_value=None)
     monkeypatch.setattr("volly.gemini_client._sleep_retry_delay", retry_sleep)
 
-    with pytest.raises(genai_errors.APIError):
-        await client.text("sys", "hi")
+    out = await client.text("sys", "hi")
 
-    # No sleep — we bailed before waiting, and there was only one transport attempt.
-    assert mock.await_count == 1
+    assert out == "finally"
+    assert mock.await_count == 2
+    # Patient mode sleeps once at the planned eta; the normal-path retry
+    # sleep must NOT also fire.
+    assert patient_sleep.await_count == 1
+    assert patient_sleep.await_args.args == (100.0,)
     assert retry_sleep.await_count == 0
+
+
+async def test_generate_patient_mode_survives_multiple_quota_locks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Patient mode bypasses the 3-attempt cap; back-to-back locks just wait.
+
+    Without patient mode, three 429s in a row would exhaust transport
+    attempts and raise. With it, every 429-above-cap reschedules and the
+    loop keeps going until a non-429 lands.
+    """
+    client = _make_client()
+    quota = _quota_error("3700s")
+    mock = AsyncMock(side_effect=[quota, quota, quota, _response(text="awake")])
+    _install_generate(client, mock)
+    monkeypatch.setattr("volly.gemini_client._retry_delay_jitter", lambda: 0.0)
+    patient_sleep = AsyncMock(return_value=None)
+    monkeypatch.setattr("volly.gemini_client._patient_sleep", patient_sleep)
+
+    out = await client.text("sys", "hi")
+
+    assert out == "awake"
+    assert mock.await_count == 4
+    assert patient_sleep.await_count == 3
+
+
+async def test_generate_patient_mode_respects_per_client_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An operator-raised ``max_retry_wait_s`` keeps a 100s delay on the normal path."""
+    client = _make_client(max_retry_wait_s=200.0)
+    quota = _quota_error("100s")
+    ok = _response(text="finally")
+    mock = AsyncMock(side_effect=[quota, ok])
+    _install_generate(client, mock)
+    monkeypatch.setattr("volly.gemini_client._retry_delay_jitter", lambda: 0.0)
+    patient_sleep = AsyncMock(return_value=None)
+    monkeypatch.setattr("volly.gemini_client._patient_sleep", patient_sleep)
+    retry_sleep = AsyncMock(return_value=None)
+    monkeypatch.setattr("volly.gemini_client._sleep_retry_delay", retry_sleep)
+
+    out = await client.text("sys", "hi")
+
+    assert out == "finally"
+    # 100s ≤ 200s cap → normal path, not patient mode.
+    assert patient_sleep.await_count == 0
+    assert retry_sleep.await_count == 1
+    assert retry_sleep.await_args.args == (100.0,)
 
 
 async def test_generate_raises_when_cumulative_retry_delay_exceeds_cap(
@@ -597,22 +661,114 @@ async def test_generate_logs_server_retry_delay_at_info(
     assert retry_logs[0].levelno == logging.INFO
 
 
-async def test_generate_does_not_log_retry_when_exceeding_cap(
+async def test_generate_logs_quota_locked_warning_in_patient_mode(
     caplog: pytest.LogCaptureFixture,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """If we bail without sleeping, no 429-retry line should appear."""
+    """Entering patient mode must emit one WARNING per quota lock — not INFO."""
     client = _make_client()
-    mock = AsyncMock(side_effect=_quota_error("100s"))
+    mock = AsyncMock(side_effect=[_quota_error("3700s"), _response(text="ok")])
     _install_generate(client, mock)
     monkeypatch.setattr("volly.gemini_client._retry_delay_jitter", lambda: 0.0)
     monkeypatch.setattr(
-        "volly.gemini_client._sleep_retry_delay", AsyncMock(return_value=None)
+        "volly.gemini_client._patient_sleep", AsyncMock(return_value=None)
     )
 
     with caplog.at_level(logging.INFO, logger="volly.gemini_client"):
-        with pytest.raises(genai_errors.APIError):
-            await client.text("sys", "hi")
+        out = await client.text("sys", "hi")
 
-    retry_logs = [r for r in caplog.records if "429 retry in" in r.getMessage()]
-    assert retry_logs == []
+    assert out == "ok"
+    locked = [r for r in caplog.records if "quota locked" in r.getMessage()]
+    assert len(locked) == 1
+    msg = locked[0].getMessage()
+    assert "eta=3700.0s" in msg
+    assert "max_retry_wait=90.0s" in msg
+    assert "Ctrl-C" in msg
+    assert locked[0].levelno == logging.WARNING
+    # The normal "429 retry in Xs (server)" INFO log must NOT fire in patient mode.
+    retry_info = [r for r in caplog.records if "429 retry in" in r.getMessage()]
+    assert retry_info == []
+
+
+# --- max_retry_wait_s constructor / property ------------------------------
+
+
+def test_client_init_max_retry_wait_defaults_to_90() -> None:
+    assert _make_client().max_retry_wait_s == 90.0
+
+
+def test_client_init_accepts_explicit_max_retry_wait() -> None:
+    client = _make_client(max_retry_wait_s=3700.0)
+    assert client.max_retry_wait_s == 3700.0
+
+
+def test_client_init_rejects_nonpositive_max_retry_wait() -> None:
+    with patch("volly.gemini_client.genai.Client"):
+        with pytest.raises(ValueError, match="max_retry_wait_s"):
+            GeminiClient(api_key="k", max_retry_wait_s=0)
+        with pytest.raises(ValueError, match="max_retry_wait_s"):
+            GeminiClient(api_key="k", max_retry_wait_s=-1.0)
+
+
+# --- _patient_sleep heartbeat --------------------------------------------
+
+
+async def test_patient_sleep_short_wait_emits_no_heartbeat(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A sub-30s patient sleep must finish in one chunk with no heartbeat."""
+    sleeps: list[float] = []
+
+    async def fake_sleep(s: float) -> None:
+        sleeps.append(s)
+
+    monkeypatch.setattr("volly.gemini_client.asyncio.sleep", fake_sleep)
+
+    with caplog.at_level(logging.INFO, logger="volly.gemini_client"):
+        await _patient_sleep(15.0)
+
+    assert sleeps == [15.0]
+    waiting = [r for r in caplog.records if "still waiting" in r.getMessage()]
+    assert waiting == []
+
+
+async def test_patient_sleep_exactly_thirty_seconds_emits_no_heartbeat(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """30s lands exactly on the chunk boundary; no heartbeat after the only chunk."""
+    sleeps: list[float] = []
+
+    async def fake_sleep(s: float) -> None:
+        sleeps.append(s)
+
+    monkeypatch.setattr("volly.gemini_client.asyncio.sleep", fake_sleep)
+
+    with caplog.at_level(logging.INFO, logger="volly.gemini_client"):
+        await _patient_sleep(30.0)
+
+    assert sleeps == [30.0]
+    waiting = [r for r in caplog.records if "still waiting" in r.getMessage()]
+    assert waiting == []
+
+
+async def test_patient_sleep_emits_heartbeat_every_30s(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """95s → 30+30+30+5 chunks; heartbeats after the first three (not the last)."""
+    sleeps: list[float] = []
+
+    async def fake_sleep(s: float) -> None:
+        sleeps.append(s)
+
+    monkeypatch.setattr("volly.gemini_client.asyncio.sleep", fake_sleep)
+
+    with caplog.at_level(logging.INFO, logger="volly.gemini_client"):
+        await _patient_sleep(95.0)
+
+    assert sleeps == [30.0, 30.0, 30.0, 5.0]
+    waiting = [r for r in caplog.records if "still waiting" in r.getMessage()]
+    assert len(waiting) == 3
+    assert "eta≈65s" in waiting[0].getMessage()
+    assert "eta≈35s" in waiting[1].getMessage()
+    assert "eta≈5s" in waiting[2].getMessage()
+    assert all(r.levelno == logging.INFO for r in waiting)

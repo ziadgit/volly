@@ -32,10 +32,11 @@ _DEFAULT_MODEL = "gemini-3.5-flash"
 _DEFAULT_RPM = 30
 _RETRY_STATUSES = frozenset({429, 500, 503})
 _MAX_TRANSPORT_ATTEMPTS = 3
-_MAX_RETRY_WAIT_S = 90.0
+_DEFAULT_MAX_RETRY_WAIT_S = 90.0
 _RETRY_INFO_TYPE = "type.googleapis.com/google.rpc.RetryInfo"
 _RETRY_DELAY_RE = re.compile(r"^(\d+(?:\.\d+)?)s$")
 _THROTTLE_LOG_SQUELCH_S = 1.0
+_PATIENT_HEARTBEAT_S = 30.0
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -210,6 +211,24 @@ async def _sleep_retry_delay(seconds: float) -> None:
     await asyncio.sleep(seconds)
 
 
+async def _patient_sleep(seconds: float) -> None:
+    """Sleep ``seconds``, emitting an INFO heartbeat every ``_PATIENT_HEARTBEAT_S``.
+
+    Used by :meth:`GeminiClient._generate` in patient mode (when a server-
+    supplied ``retryDelay`` exceeds the per-client ``max_retry_wait_s`` cap)
+    so an operator running through an hourly/daily quota reset can see the
+    loop is alive and just waiting, not hung. Module-level seam so tests
+    can monkeypatch the whole helper to skip the wait.
+    """
+    remaining = seconds
+    while remaining > 0:
+        chunk = min(_PATIENT_HEARTBEAT_S, remaining)
+        await asyncio.sleep(chunk)
+        remaining -= chunk
+        if remaining > 0:
+            _log.info("gemini: still waiting, eta≈%.0fs", remaining)
+
+
 class GeminiClient:
     """Thin async wrapper over ``google.genai`` for Gemini 3.5 Flash."""
 
@@ -219,7 +238,12 @@ class GeminiClient:
         api_key: str | None = None,
         *,
         rpm: int | None = None,
+        max_retry_wait_s: float = _DEFAULT_MAX_RETRY_WAIT_S,
     ) -> None:
+        if max_retry_wait_s <= 0:
+            raise ValueError(
+                f"max_retry_wait_s must be positive, got {max_retry_wait_s}"
+            )
         load_dotenv()
         key = api_key or os.environ.get("GEMINI_API_KEY")
         if not key:
@@ -229,41 +253,68 @@ class GeminiClient:
         self.model = model
         self._client = genai.Client(api_key=key)
         self._rpm_limiter = _RpmLimiter(_resolve_rpm(rpm))
+        self._max_retry_wait_s = max_retry_wait_s
 
     @property
     def rpm(self) -> int:
         """Effective requests-per-minute ceiling enforced by the limiter."""
         return self._rpm_limiter.rpm
 
+    @property
+    def max_retry_wait_s(self) -> float:
+        """Per-call retryDelay cap. Above this, ``_generate`` enters patient mode."""
+        return self._max_retry_wait_s
+
     async def _generate(
         self,
         contents: list[types.PartUnion],
         config: types.GenerateContentConfig,
     ) -> types.GenerateContentResponse:
-        last_exc: BaseException | None = None
         total_retry_wait = 0.0
-        for attempt in range(_MAX_TRANSPORT_ATTEMPTS):
+        attempt = 0
+        while True:
             await self._rpm_limiter.acquire()
             try:
                 return await self._client.aio.models.generate_content(
                     model=self.model, contents=contents, config=config
                 )
             except genai_errors.APIError as exc:
-                if exc.code not in _RETRY_STATUSES or attempt == _MAX_TRANSPORT_ATTEMPTS - 1:
+                if exc.code not in _RETRY_STATUSES:
                     raise
-                last_exc = exc
                 server_delay = _parse_retry_delay(exc) if exc.code == 429 else None
+
+                # Patient mode: server says wait > our cap. Don't raise —
+                # log a warning and sleep with heartbeats until the quota
+                # window opens. Bypasses both the attempt counter and the
+                # cumulative-wait cap so the loop can outlive an hourly/daily
+                # reset (spec 03 §"Patient mode").
+                if (
+                    server_delay is not None
+                    and server_delay > self._max_retry_wait_s
+                ):
+                    planned = server_delay + _retry_delay_jitter()
+                    _log.warning(
+                        "gemini: quota locked, eta=%.1fs > max_retry_wait=%.1fs, "
+                        "pausing; Ctrl-C to abort",
+                        server_delay,
+                        self._max_retry_wait_s,
+                    )
+                    await _patient_sleep(planned)
+                    continue
+
+                attempt += 1
+                if attempt >= _MAX_TRANSPORT_ATTEMPTS:
+                    raise
+
                 if server_delay is not None:
                     planned = server_delay + _retry_delay_jitter()
-                    if total_retry_wait + planned > _MAX_RETRY_WAIT_S:
+                    if total_retry_wait + planned > self._max_retry_wait_s:
                         raise
                     total_retry_wait += planned
                     _log.info("gemini: 429 retry in %.1fs (server)", planned)
                     await _sleep_retry_delay(planned)
                 else:
-                    await _sleep_backoff(attempt)
-        assert last_exc is not None  # unreachable; keeps the type-checker honest
-        raise last_exc
+                    await _sleep_backoff(attempt - 1)
 
     async def text(
         self,

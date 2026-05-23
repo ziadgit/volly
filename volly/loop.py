@@ -193,6 +193,7 @@ class LoopConfig:
     ablate_judge: bool = False
     demo_mode: bool = False
     rpm: int | None = None
+    max_retry_wait_s: float = 90.0
 
 
 def validate_subject(subject: str) -> str:
@@ -461,7 +462,9 @@ async def run(config: LoopConfig, *, client: GeminiClient | None = None) -> RunH
 
     owns_client = client is None
     if client is None:
-        client = GeminiClient(rpm=config.rpm)
+        client = GeminiClient(
+            rpm=config.rpm, max_retry_wait_s=config.max_retry_wait_s
+        )
 
     history = RunHistory(
         subject=subject,
@@ -581,6 +584,17 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         default=None,
         help="cap Gemini requests per minute (default: GEMINI_RPM env, else 30; set 5 for free tier)",
     )
+    parser.add_argument(
+        "--max-retry-wait",
+        type=float,
+        default=90.0,
+        help=(
+            "per-call cap (seconds) on honoring server retryDelay; above the "
+            "cap the client enters patient mode (warn + heartbeat sleep + "
+            "retry, no crash). Default 90; set ~3700 to wait through an hourly "
+            "quota reset"
+        ),
+    )
     parser.add_argument("--out", type=Path, default=None, help="override VOLLY_RUN_DIR")
     return parser.parse_args(argv)
 
@@ -603,6 +617,7 @@ def main(argv: list[str] | None = None) -> int:
             ablate_judge=args.ablate_judge,
             demo_mode=args.demo,
             rpm=args.rpm,
+            max_retry_wait_s=args.max_retry_wait,
         )
         history = asyncio.run(run(config))
     except ValueError as exc:

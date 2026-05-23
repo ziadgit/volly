@@ -323,9 +323,12 @@ volly/
   honored; logged before `_sleep_retry_delay` so an operator sees the
   wait coming. The exponential-backoff fallback (`_sleep_backoff`,
   triggered when no RetryInfo is present) deliberately does NOT log —
-  it's a sub-second sleep and would just be noise. Cap-exceeded re-raises
-  also do NOT log (`test_generate_does_not_log_retry_when_exceeding_cap`
-  pins this). Throttle squelching is tested with a `_FakeClock` that
+  it's a sub-second sleep and would just be noise. Patient-mode entries
+  (single retryDelay > `max_retry_wait_s`) deliberately do NOT emit the
+  INFO line either — they use the WARNING `quota locked` line instead
+  (`test_generate_logs_quota_locked_warning_in_patient_mode` pins both:
+  the WARNING fires once, the INFO `429 retry in` never does). Throttle
+  squelching is tested with a `_FakeClock` that
   honestly ticks: rpm=120 → 0.5s/token, three back-to-back sleeping
   acquires at clock=0/0.5/1.0 produce exactly two log lines.
 - **Judge + rewriter both swallow `google.genai.errors.APIError`** (and
@@ -342,3 +345,26 @@ volly/
   `rewriter degraded: <reason>; keeping prior prompt`. Tests construct
   `genai_errors.APIError(code=429, response_json={"error": {"message":
   "..."}})` directly; the bare-class case covers all subclasses.
+- `volly.gemini_client` **patient mode** keeps the loop alive through long
+  quota windows (sponsorship-key hourly resets, free-tier daily resets at
+  UTC midnight). Trigger: a single server-supplied `retryDelay` exceeds the
+  per-client `max_retry_wait_s` cap (default 90s, override via
+  `GeminiClient(max_retry_wait_s=...)` or `--max-retry-wait N` on the loop
+  CLI). Behavior in `_generate`: log WARNING `gemini: quota locked, eta=Xs
+  > max_retry_wait=Ys, pausing; Ctrl-C to abort`, call `_patient_sleep(
+  retryDelay + jitter)` which sleeps in 30s chunks and emits INFO `gemini:
+  still waiting, eta≈Xs` after each non-final chunk, then `continue` the
+  retry loop — **bypassing both the `_MAX_TRANSPORT_ATTEMPTS=3` cap and the
+  cumulative-wait cap**. The unbounded patient retry only exits on a
+  non-429 response or KeyboardInterrupt; back-to-back quota locks just keep
+  waiting. Normal-path 429s (where `retryDelay ≤ max_retry_wait_s`) still
+  use the existing `_sleep_retry_delay` + cumulative-cap path and the INFO
+  `429 retry in Xs (server)` line. Operators on `--tier free`-style flows
+  will run `--max-retry-wait 3700` so a server saying "wait 60 minutes for
+  the hourly reset" pauses politely instead of crashing. `_patient_sleep`
+  is a module-level seam — tests monkeypatch the whole helper (skipping
+  the heartbeat) when exercising `_generate`; the heartbeat itself is
+  covered by direct `_patient_sleep` tests that monkeypatch
+  `asyncio.sleep`. Heartbeat constant is `_PATIENT_HEARTBEAT_S=30.0`; a
+  sleep that lands exactly on a chunk boundary (e.g. 30s, 60s) emits no
+  trailing heartbeat because `remaining > 0` is the gate.

@@ -643,6 +643,75 @@ def test_main_passes_rpm_to_gemini_client(
     assert captured.get("rpm") == 5
 
 
+def test_parse_args_max_retry_wait_defaults_to_90() -> None:
+    """``--max-retry-wait`` defaults to 90s, matching ``GeminiClient`` default."""
+    args = loop._parse_args(["--subject", "cat"])
+    assert args.max_retry_wait == 90.0
+    args = loop._parse_args(["--subject", "cat", "--max-retry-wait", "3700"])
+    assert args.max_retry_wait == 3700.0
+
+
+def test_main_help_lists_max_retry_wait_flag(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit):
+        loop._parse_args(["--help"])
+    assert "--max-retry-wait" in capsys.readouterr().out
+
+
+def test_main_passes_max_retry_wait_to_gemini_client(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``--max-retry-wait 3700`` reaches the auto-constructed ``GeminiClient`` ctor."""
+    captured: dict[str, object] = {}
+
+    def fake_ctor(*args, **kwargs):
+        captured.update(kwargs)
+        return _stub_client(judge_results=[_judge_result(1, best=0)])
+
+    monkeypatch.setattr("volly.loop.GeminiClient", fake_ctor)
+
+    rc = loop.main(
+        [
+            "--subject", "cat",
+            "--iterations", "1",
+            "--candidates", "1",
+            "--no-control",
+            "--max-retry-wait", "3700",
+            "--out", str(tmp_path),
+        ]
+    )
+
+    assert rc == 0
+    assert captured.get("max_retry_wait_s") == 3700.0
+
+
+def test_main_max_retry_wait_default_passes_90_to_client(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without the flag, the loop still threads the 90s default through."""
+    captured: dict[str, object] = {}
+
+    def fake_ctor(*args, **kwargs):
+        captured.update(kwargs)
+        return _stub_client(judge_results=[_judge_result(1, best=0)])
+
+    monkeypatch.setattr("volly.loop.GeminiClient", fake_ctor)
+
+    rc = loop.main(
+        [
+            "--subject", "cat",
+            "--iterations", "1",
+            "--candidates", "1",
+            "--no-control",
+            "--out", str(tmp_path),
+        ]
+    )
+
+    assert rc == 0
+    assert captured.get("max_retry_wait_s") == 90.0
+
+
 async def test_run_demo_mode_off_uses_seed_for_both_arms(tmp_path: Path) -> None:
     """Sanity: with demo_mode=False (the default), both arms start on SEED_PROMPT."""
     client = _stub_client(
