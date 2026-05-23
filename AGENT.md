@@ -89,3 +89,9 @@ volly/
   lacks `thinking_budget` / `thinking_level` and we need per-call
   Low/Medium/High control for the actor vs. judge split. Async entry
   point is `client.aio.models.generate_content(model, contents, config)`.
+- `google-genai` 2.6.0: `types.ThinkingConfig(thinking_level=...)` accepts
+  the snake_case kwarg (pydantic alias). `GenerateContentResponse.parsed`
+  is populated when both `response_mime_type="application/json"` AND
+  `response_schema=<pydantic class>` are set — fall back to
+  `schema.model_validate_json(response.text)` if `.parsed` is `None`.
+  `APIError.code` is the HTTP status; retry only 429/500/503.
