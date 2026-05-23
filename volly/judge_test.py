@@ -154,3 +154,68 @@ def test_candidate_score_rejects_out_of_range() -> None:
         CandidateScore(index=0, score=1.5, why="too hot")
     with pytest.raises(ValidationError):
         CandidateScore(index=0, score=-0.1, why="too cold")
+
+
+async def test_rank_text_only_mode_attaches_no_images_and_inlines_ascii() -> None:
+    images = [_img() for _ in range(3)]
+    texts = ["AAA\nBBB", "CCC\nDDD", "EEE\nFFF"]
+    mock = AsyncMock(return_value=_ok_result(3))
+    client = _client(mock)
+
+    await rank(client, "cat", "p", images, include_images=False, texts=texts)
+
+    assert mock.await_args.kwargs["images"] is None
+    user = mock.await_args.args[1]
+    for i, t in enumerate(texts):
+        assert f"Candidate {i}:" in user
+        assert t in user
+    system = mock.await_args.args[0]
+    assert "no images attached" in system
+    assert "3 candidate drawings" in system
+
+
+async def test_rank_text_only_mode_requires_texts() -> None:
+    images = [_img()]
+    mock = AsyncMock(return_value=_ok_result(1))
+    client = _client(mock)
+
+    with pytest.raises(ValueError, match="texts"):
+        await rank(client, "cat", "p", images, include_images=False)
+    mock.assert_not_awaited()
+
+
+async def test_rank_text_only_mode_keeps_history_critiques_but_drops_image_payload() -> None:
+    images = [_img() for _ in range(2)]
+    texts = ["a", "b"]
+    history = [
+        HistoryEntry(
+            iter_index=i, best_image=_img("black"), critique=f"crit-{i}", top_score=0.3 + 0.1 * i
+        )
+        for i in (3, 4, 5, 6)
+    ]
+    mock = AsyncMock(return_value=_ok_result(2))
+    client = _client(mock)
+
+    await rank(client, "cat", "p", images, history=history, include_images=False, texts=texts)
+
+    assert mock.await_args.kwargs["images"] is None
+    user = mock.await_args.args[1]
+    for h in history:
+        assert f"Iteration {h.iter_index}" in user
+        assert h.critique in user
+    assert "image" not in user.split("Candidate 0", 1)[0].lower() or "no images" in user.lower()
+
+
+async def test_rank_text_only_mode_falls_back_on_validation_error(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    images = [_img() for _ in range(2)]
+    texts = ["a", "b"]
+    mock = AsyncMock(side_effect=_make_validation_error())
+    client = _client(mock)
+
+    with caplog.at_level("WARNING", logger="volly.judge"):
+        out = await rank(client, "cat", "p", images, include_images=False, texts=texts)
+
+    assert [s.index for s in out.scores] == [0, 1]
+    assert all(s.score == 0.5 for s in out.scores)

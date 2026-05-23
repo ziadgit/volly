@@ -172,6 +172,19 @@ volly/
   `--no-control` run shows no phantom legend entry. `altair` and
   `pandas` are not in `pyproject.toml` — they ship as transitive deps
   of `streamlit`.
+- `volly.judge.rank(..., include_images=False, texts=[...])` is the
+  text-judge ablation mode (spec 06 §Ablation hook). `texts` is required
+  and its length must match `len(images)` — the loop passes the same
+  rendered candidates so vision-judge and text-judge agree on `n`. In
+  text mode no images are attached (neither candidates nor prior bests),
+  the system prompt swaps "candidate images" for "candidate drawings as
+  raw ASCII text", and the user message inlines each ASCII block between
+  `~~~` fences. History critiques are still included as text.
+  `volly.loop --ablate-judge` enables it: after vision-judge, the loop
+  reruns text-judge on the same candidates per arm and logs
+  `ablation iter N arm X: vision_top3=A text_top3=B delta=±C` at INFO.
+  Text-judge failures are caught and logged via `_log.exception` so the
+  live demo never dies on ablation noise.
 - `volly.state.RunHistory.prompt_versions` returns the evolving-arm
   `system_prompt` for every evolving iteration in order, with no
   dedup — iteration N's prompt is what the rewriter produced from

@@ -79,6 +79,31 @@ strictly cheaper than calling a second model.
 
 ## Ablation hook
 
-P2 backlog: text-only judge mode (`include_images=False`) for the
-ablation talking point. Same schema, no images attached, subject + raw
-ASCII text in the user message.
+Text-only judge mode for the ablation talking point: same schema, no
+images attached, subject + raw ASCII text in the user message.
+
+```python
+await rank(
+    client, subject, system_prompt, images,
+    include_images=False, texts=[c.text for c in cands],
+)
+```
+
+`texts` is required when `include_images=False`; its length must match
+`len(images)` because the loop calls vision-judge and text-judge on the
+same candidate set. The text-only system prompt drops the "candidate
+images" phrasing and says "candidate drawings as raw ASCII text (no
+images attached)". Prior-iteration image attachments are also omitted in
+text-only mode, but their textual critique summaries are kept — the
+ablation is about *this* iteration's candidates, not history.
+
+Invoked from `volly.loop` when `--ablate-judge` is set. After the vision
+judge runs, the loop calls text-judge on the same candidates and logs a
+single line per arm per iteration:
+
+```
+ablation iter N arm <evolving|control>: vision_top3=A.AAA text_top3=B.BBB delta=±C.CCC
+```
+
+Failures in the text-judge call are logged + swallowed (`_log.exception`)
+— the live loop never crashes on an ablation degradation.

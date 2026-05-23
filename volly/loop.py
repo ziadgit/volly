@@ -46,6 +46,7 @@ class LoopConfig:
     actor_thinking: Thinking = Thinking.LOW
     judge_thinking: Thinking = Thinking.HIGH
     rewriter_thinking: Thinking = Thinking.HIGH
+    ablate_judge: bool = False
 
 
 def validate_subject(subject: str) -> str:
@@ -140,6 +141,7 @@ async def _run_arm(
     judge_history: list[HistoryEntry],
     iter_dir: Path,
     prior_best: Candidate | None,
+    ablate_judge: bool = False,
 ) -> IterationRecord:
     cands_raw = await actor.generate(
         client, system_prompt, subject, k=k, thinking=actor_thinking
@@ -165,6 +167,19 @@ async def _run_arm(
             history=judge_history,
             thinking=judge_thinking,
         )
+        if ablate_judge:
+            await _log_text_judge_delta(
+                client=client,
+                arm=arm,
+                iter_index=iter_index,
+                subject=subject,
+                system_prompt=system_prompt,
+                images=images,
+                cands=cands,
+                judge_history=judge_history,
+                judge_thinking=judge_thinking,
+                vision_result=judge_result,
+            )
     else:
         _log.warning("iter %d arm %s: zero candidates, fabricating empty judge", iter_index, arm)
         judge_result = JudgeResult(
@@ -188,6 +203,52 @@ async def _run_arm(
         judge=judge_result,
         best_image_path=best_path,
         win_rate=win_rate(scores),
+    )
+
+
+async def _log_text_judge_delta(
+    *,
+    client: GeminiClient,
+    arm: str,
+    iter_index: int,
+    subject: str,
+    system_prompt: str,
+    images: list[PIL.Image.Image],
+    cands: list[Candidate],
+    judge_history: list[HistoryEntry],
+    judge_thinking: Thinking,
+    vision_result: JudgeResult,
+) -> None:
+    """Run a text-only judge on the same candidates, log the top-3 score delta.
+
+    Per ``specs/06-judge.md``'s ablation hook + the P2 fix_plan item:
+    measures how much the vision channel adds over raw-ASCII judgment on
+    an identical candidate set. Failures are logged and swallowed —
+    ablation must never crash the live loop.
+    """
+    try:
+        text_result = await judge.rank(
+            client,
+            subject,
+            system_prompt,
+            images,
+            history=judge_history,
+            thinking=judge_thinking,
+            include_images=False,
+            texts=[c.text for c in cands],
+        )
+    except Exception:
+        _log.exception("ablation iter %d arm %s: text-judge failed", iter_index, arm)
+        return
+    vision_top3 = win_rate([s.score for s in vision_result.scores])
+    text_top3 = win_rate([s.score for s in text_result.scores])
+    _log.info(
+        "ablation iter %d arm %s: vision_top3=%.3f text_top3=%.3f delta=%+.3f",
+        iter_index,
+        arm,
+        vision_top3,
+        text_top3,
+        vision_top3 - text_top3,
     )
 
 
@@ -230,6 +291,7 @@ async def run(config: LoopConfig, *, client: GeminiClient | None = None) -> RunH
                     judge_history=_judge_history_for(history, "evolving"),
                     iter_dir=iter_dir,
                     prior_best=_last_best_candidate(history, "evolving"),
+                    ablate_judge=config.ablate_judge,
                 )
             ]
             if not config.no_control:
@@ -246,6 +308,7 @@ async def run(config: LoopConfig, *, client: GeminiClient | None = None) -> RunH
                         judge_history=_judge_history_for(history, "control"),
                         iter_dir=iter_dir,
                         prior_best=_last_best_candidate(history, "control"),
+                        ablate_judge=config.ablate_judge,
                     )
                 )
 
@@ -292,6 +355,11 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         action="store_true",
         help="skip the static-control arm to halve API spend",
     )
+    parser.add_argument(
+        "--ablate-judge",
+        action="store_true",
+        help="also run a text-only judge per iteration and log vision-vs-text top-3 delta",
+    )
     parser.add_argument("--out", type=Path, default=None, help="override VOLLY_RUN_DIR")
     return parser.parse_args(argv)
 
@@ -311,6 +379,7 @@ def main(argv: list[str] | None = None) -> int:
             candidates=args.candidates,
             no_control=args.no_control,
             out_dir=args.out,
+            ablate_judge=args.ablate_judge,
         )
         history = asyncio.run(run(config))
     except ValueError as exc:

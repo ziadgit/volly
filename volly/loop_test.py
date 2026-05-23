@@ -270,3 +270,95 @@ def test_main_help_lists_required_subject_flag(capsys: pytest.CaptureFixture[str
     out = capsys.readouterr().out
     assert "--subject" in out
     assert "--no-control" in out
+    assert "--ablate-judge" in out
+
+
+def test_parse_args_ablate_judge_defaults_off() -> None:
+    args = loop._parse_args(["--subject", "cat"])
+    assert args.ablate_judge is False
+    args = loop._parse_args(["--subject", "cat", "--ablate-judge"])
+    assert args.ablate_judge is True
+
+
+async def test_run_ablate_judge_doubles_judge_calls_and_logs_delta(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """--ablate-judge runs vision + text judge on the same candidates per arm."""
+    seen_calls: list[bool] = []
+
+    async def stub_rank(
+        client, subject, system_prompt, images, *, history=None, thinking,
+        include_images=True, texts=None,
+    ):
+        seen_calls.append(include_images)
+        if not include_images:
+            # Text judge: lower scores so delta is positive.
+            return JudgeResult(
+                scores=[CandidateScore(index=i, score=0.2, why=f"t{i}") for i in range(len(images))],
+                best_index=0,
+                worst_index=len(images) - 1,
+                critique="text-only",
+                prompt_suggestions=[],
+            )
+        return _judge_result(len(images), best=0)
+
+    monkeypatch.setattr(loop.judge, "rank", stub_rank)
+
+    client = _stub_client(judge_results=[])
+    config = loop.LoopConfig(
+        subject="cat",
+        iterations=2,
+        candidates=2,
+        no_control=False,
+        out_dir=tmp_path,
+        ablate_judge=True,
+    )
+
+    with caplog.at_level("INFO", logger="volly.loop"):
+        await loop.run(config, client=client)
+
+    # 2 arms × 2 iters × 2 modes (vision + text) = 8 rank calls
+    assert len(seen_calls) == 8
+    assert seen_calls.count(True) == 4
+    assert seen_calls.count(False) == 4
+
+    delta_lines = [r.getMessage() for r in caplog.records if "ablation iter" in r.getMessage()]
+    assert len(delta_lines) == 4
+    assert any("arm evolving" in line and "delta=" in line for line in delta_lines)
+    assert any("arm control" in line for line in delta_lines)
+
+
+async def test_run_ablation_text_judge_failure_does_not_crash(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A crash in the text-only judge must be logged and swallowed."""
+
+    async def stub_rank(
+        client, subject, system_prompt, images, *, history=None, thinking,
+        include_images=True, texts=None,
+    ):
+        if not include_images:
+            raise RuntimeError("text judge boom")
+        return _judge_result(len(images), best=0)
+
+    monkeypatch.setattr(loop.judge, "rank", stub_rank)
+
+    client = _stub_client(judge_results=[])
+    config = loop.LoopConfig(
+        subject="cat",
+        iterations=1,
+        candidates=2,
+        no_control=True,
+        out_dir=tmp_path,
+        ablate_judge=True,
+    )
+
+    with caplog.at_level("ERROR", logger="volly.loop"):
+        history = await loop.run(config, client=client)
+
+    assert len(history.iterations) == 1
+    assert any("text-judge failed" in r.getMessage() for r in caplog.records)
