@@ -95,3 +95,11 @@ volly/
   `response_schema=<pydantic class>` are set — fall back to
   `schema.model_validate_json(response.text)` if `.parsed` is `None`.
   `APIError.code` is the HTTP status; retry only 429/500/503.
+- `volly.renderer` locates a monospace font by scanning a small list of
+  well-known paths (DejaVuSansMono on Linux, Menlo.ttc on macOS, Consolas
+  on Windows). If none exist it tries `matplotlib.font_manager` (soft
+  dep, not in `pyproject`), then falls back to `ImageFont.load_default()`
+  — which is proportional, so grid alignment degrades. On this Mac,
+  `/System/Library/Fonts/Menlo.ttc` is the resolved font.
+- Pillow 14 deprecates `Image.Image.getdata`; renderer tests still use
+  it (warns, doesn't fail). Tracked in fix_plan.md under P2.
