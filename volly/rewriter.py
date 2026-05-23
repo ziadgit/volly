@@ -11,6 +11,8 @@ from __future__ import annotations
 import logging
 import re
 
+from google.genai import errors as genai_errors
+
 from volly.gemini_client import GeminiClient, Thinking
 from volly.judge import JudgeResult
 
@@ -103,5 +105,9 @@ async def rewrite(
     """
     system = _SYSTEM_TEMPLATE.format(subject=subject)
     user = _build_user_message(current_prompt, judge_result, subject)
-    raw = await client.text(system, user, thinking=thinking)
+    try:
+        raw = await client.text(system, user, thinking=thinking)
+    except genai_errors.APIError as exc:
+        _log.info("rewriter degraded: %s; keeping prior prompt", exc)
+        return current_prompt
     return _enforce_invariants(raw, subject)

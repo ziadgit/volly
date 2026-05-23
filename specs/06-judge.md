@@ -46,6 +46,21 @@ async def rank(
   (`prompt_suggestions=[]`, `scores=uniform`) and log the fallback. The
   loop continues; we'd rather degrade than crash mid-demo.
 
+## Graceful degradation on API failure
+
+If `client.json(...)` raises `google.genai.errors.APIError` (or any subclass
+— `ClientError`, `ServerError`), `rank()` MUST NOT re-raise. Instead:
+
+1. Log WARNING `judge degraded on APIError: <reason>`.
+2. Return a uniform fallback `JudgeResult` with `prompt_suggestions=[]`,
+   `scores=uniform` (all 0.5), and `critique="judge degraded: <reason>"`.
+
+Rationale: a 429 from the judge must not crash the loop. The rewriter will
+see the degraded `JudgeResult` (no suggestions) and skip its own update on
+the same turn — no learning happens that iteration, but the run continues
+and the actor keeps producing data. Same shape as the rewriter's
+keep-prior-prompt path (spec 07).
+
 ## System prompt for the judge
 
 ```

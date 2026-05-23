@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 from unittest.mock import AsyncMock, MagicMock
 
+from google.genai import errors as genai_errors
+
 from volly.gemini_client import GeminiClient, Thinking
 from volly.judge import CandidateScore, JudgeResult
 from volly.rewriter import _ANCHOR, _MAX_LEN, rewrite
@@ -189,3 +191,57 @@ async def test_rewrite_anchor_injection_on_empty_response() -> None:
     out = await rewrite(client, f"{_ANCHOR} old.", _judge_result(), "cat")
 
     assert out == _ANCHOR
+
+
+async def test_rewrite_returns_current_prompt_on_api_error(caplog) -> None:
+    prior = f"{_ANCHOR} keep me as-is."
+    api_exc = genai_errors.APIError(
+        code=429, response_json={"error": {"message": "quota exhausted"}}
+    )
+    mock = AsyncMock(side_effect=api_exc)
+    client = _client(mock)
+
+    with caplog.at_level(logging.INFO, logger="volly.rewriter"):
+        out = await rewrite(client, prior, _judge_result(), "cat")
+
+    assert out == prior
+    assert any(
+        "rewriter degraded" in rec.getMessage()
+        and "keeping prior prompt" in rec.getMessage()
+        for rec in caplog.records
+    )
+
+
+async def test_rewrite_api_error_skips_invariant_enforcement(caplog) -> None:
+    # current_prompt that violates the anchor/length invariants must still
+    # come back unchanged on APIError — the rewriter is *keeping* it, not
+    # producing a new prompt.
+    prior_without_anchor = "no anchor and full of nonsense " * 10
+    api_exc = genai_errors.APIError(
+        code=503, response_json={"error": {"message": "backend busy"}}
+    )
+    mock = AsyncMock(side_effect=api_exc)
+    client = _client(mock)
+
+    with caplog.at_level(logging.INFO, logger="volly.rewriter"):
+        out = await rewrite(client, prior_without_anchor, _judge_result(), "cat")
+
+    assert out == prior_without_anchor
+    assert not out.startswith(_ANCHOR)
+
+
+async def test_rewrite_api_error_log_level_is_info_not_warning(caplog) -> None:
+    api_exc = genai_errors.APIError(
+        code=429, response_json={"error": {"message": "slow"}}
+    )
+    mock = AsyncMock(side_effect=api_exc)
+    client = _client(mock)
+
+    with caplog.at_level(logging.INFO, logger="volly.rewriter"):
+        await rewrite(client, f"{_ANCHOR} old.", _judge_result(), "cat")
+
+    degraded = [
+        rec for rec in caplog.records if "rewriter degraded" in rec.getMessage()
+    ]
+    assert degraded, "expected an INFO rewriter-degraded log line"
+    assert all(rec.levelno == logging.INFO for rec in degraded)

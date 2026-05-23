@@ -11,6 +11,7 @@ import logging
 from dataclasses import dataclass
 
 import PIL.Image
+from google.genai import errors as genai_errors
 from pydantic import BaseModel, Field, ValidationError
 
 from volly.gemini_client import GeminiClient, Thinking
@@ -151,6 +152,19 @@ def _fallback_result(n: int) -> JudgeResult:
     )
 
 
+def _api_fallback_result(n: int, reason: str) -> JudgeResult:
+    return JudgeResult(
+        scores=[
+            CandidateScore(index=i, score=0.5, why="fallback: judge degraded")
+            for i in range(n)
+        ],
+        best_index=0,
+        worst_index=max(n - 1, 0),
+        critique=f"judge degraded: {reason}",
+        prompt_suggestions=[],
+    )
+
+
 async def rank(
     client: GeminiClient,
     subject: str,
@@ -205,3 +219,6 @@ async def rank(
     except ValidationError as exc:
         _log.warning("judge fell back to uniform scoring: %s", exc)
         return _fallback_result(n)
+    except genai_errors.APIError as exc:
+        _log.warning("judge degraded on APIError: %s", exc)
+        return _api_fallback_result(n, str(exc))

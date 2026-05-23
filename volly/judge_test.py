@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import PIL.Image
 import pytest
+from google.genai import errors as genai_errors
 from pydantic import ValidationError
 
 from volly.gemini_client import GeminiClient, Thinking
@@ -219,3 +220,66 @@ async def test_rank_text_only_mode_falls_back_on_validation_error(
 
     assert [s.index for s in out.scores] == [0, 1]
     assert all(s.score == 0.5 for s in out.scores)
+
+
+async def test_rank_falls_back_on_api_error_with_degraded_critique(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    images = [_img() for _ in range(4)]
+    api_exc = genai_errors.APIError(
+        code=429, response_json={"error": {"message": "quota exhausted"}}
+    )
+    mock = AsyncMock(side_effect=api_exc)
+    client = _client(mock)
+
+    with caplog.at_level("WARNING", logger="volly.judge"):
+        out = await rank(client, "cat", "p", images)
+
+    assert [s.index for s in out.scores] == [0, 1, 2, 3]
+    assert all(s.score == 0.5 for s in out.scores)
+    assert out.prompt_suggestions == []
+    assert out.best_index == 0
+    assert out.worst_index == 3
+    assert out.critique.startswith("judge degraded:")
+    assert any(
+        "judge degraded on APIError" in rec.getMessage() for rec in caplog.records
+    )
+
+
+async def test_rank_falls_back_on_api_error_text_mode(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    images = [_img() for _ in range(2)]
+    texts = ["a", "b"]
+    api_exc = genai_errors.APIError(
+        code=503, response_json={"error": {"message": "backend busy"}}
+    )
+    mock = AsyncMock(side_effect=api_exc)
+    client = _client(mock)
+
+    with caplog.at_level("WARNING", logger="volly.judge"):
+        out = await rank(client, "cat", "p", images, include_images=False, texts=texts)
+
+    assert [s.index for s in out.scores] == [0, 1]
+    assert all(s.score == 0.5 for s in out.scores)
+    assert out.prompt_suggestions == []
+    assert out.critique.startswith("judge degraded:")
+    assert any(
+        "judge degraded on APIError" in rec.getMessage() for rec in caplog.records
+    )
+
+
+async def test_rank_api_error_fallback_handles_zero_candidates() -> None:
+    images: list[PIL.Image.Image] = []
+    api_exc = genai_errors.APIError(
+        code=429, response_json={"error": {"message": "slow"}}
+    )
+    mock = AsyncMock(side_effect=api_exc)
+    client = _client(mock)
+
+    out = await rank(client, "cat", "p", images)
+
+    assert out.scores == []
+    assert out.best_index == 0
+    assert out.worst_index == 0
+    assert out.critique.startswith("judge degraded:")

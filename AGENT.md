@@ -292,3 +292,17 @@ volly/
   Falls back to `_sleep_backoff` when RetryInfo is absent — the existing
   `test_generate_raises_after_max_transport_attempts` still exercises
   that path (its 429s carry no RetryInfo).
+- **Judge + rewriter both swallow `google.genai.errors.APIError`** (and
+  its subclasses `ClientError`/`ServerError`, by `except APIError`) so
+  the loop survives quota/transient failures the client retry could not
+  paper over. Judge path: `_api_fallback_result(n, str(exc))` returns
+  uniform 0.5 scores, `prompt_suggestions=[]`, and `critique="judge
+  degraded: <reason>"` (distinct critique from the existing
+  ValidationError fallback so an operator can tell the two failure modes
+  apart in `state.json`); logs WARNING `judge degraded on APIError: ...`.
+  Rewriter path: returns `current_prompt` UNCHANGED — invariants are NOT
+  re-enforced because we're keeping the prior prompt, which already
+  passed them; logs INFO (not WARNING — keeps demo noise floor low)
+  `rewriter degraded: <reason>; keeping prior prompt`. Tests construct
+  `genai_errors.APIError(code=429, response_json={"error": {"message":
+  "..."}})` directly; the bare-class case covers all subclasses.
