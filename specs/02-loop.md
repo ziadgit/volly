@@ -64,7 +64,7 @@ Flags:
 - `--iterations` (default 8)
 - `--candidates` (default 8)
 - `--no-control` (skip the control arm, half the API spend)
-- `--rpm N` (cap requests/minute across actor+judge+rewriter; default 30, set 5 for free tier — see spec 03 §"Rate limiting")
+- `--rpm N` (cap requests/minute across actor+judge+rewriter; default 30; for free tier prefer `--tier free` which sets rpm=4 — one below the 5 RPM Gemini ceiling as a safety margin against burst/clock drift; see spec 03 §"Rate limiting")
 - `--max-retry-wait N` (per-call ceiling on honoring server `retryDelay`, in seconds; default 90; set ~3700 to wait through an hourly reset — see spec 03 §"Patient mode")
 - `--resume <run-dir>` (continue an existing run from its last completed iteration; preserves `run_dir`, `state.json`, and the evolved prompt — see §"Resumable runs" below)
 - `--tier {free,paid}` (preset bundle — see §"Tier presets" below)
@@ -128,6 +128,12 @@ Explicit flags override the preset (e.g. `--tier free --candidates 4`).
 | `--candidates`       | 3                                         | 8                             |
 | `--no-control`       | True (skip control arm to halve API cost) | False                         |
 | `--max-retry-wait`   | 3700 (wait through hourly reset)          | 90                            |
+
+The free-tier `--rpm 4` is **deliberately one below the 5 RPM Gemini ceiling**
+— a safety margin against clock drift between the client's token bucket and
+Gemini's rolling-window quota counter. Operators who need every available
+request can override with `--tier free --rpm 5`, but the default 4 leaves
+headroom so a single jitter-induced burst doesn't trip a 429.
 
 When `--tier` is omitted, **no preset is applied** — raw argparse defaults
 stand (`rpm=None` → `GEMINI_RPM` env or 30, `candidates=8`, `no_control=False`,

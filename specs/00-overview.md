@@ -70,8 +70,9 @@ handle this *inside the loop*, not by changing the demo shape:
   (spec 03 §"Rate limiting"). All `_generate` calls acquire a token first;
   bursting actors are queued, not refused.
 - `--rpm` CLI flag and `GEMINI_RPM` env override the default. Default is
-  **30** (suits a paid tier without surprises); free-tier operators set
-  `--rpm 5`.
+  **30** (suits a paid tier without surprises); free-tier operators use
+  `--tier free` (rpm=4, one below the 5 RPM ceiling as a safety margin
+  against burst/clock drift — see spec 02 §"Tier presets").
 - On a 429 the client honors Gemini's `RetryInfo.retryDelay` (typically
   44–60s) instead of guessing — see spec 03.
 
@@ -79,9 +80,10 @@ Operator playbook:
 
 - **Paid tier** (any positive-RPS plan; what hackathon sponsors usually
   hand out): keep defaults, iterations finish in ~10 s each.
-- **Free tier**: pass `--rpm 5`. Each iteration takes ~4 minutes; do not
-  attempt a live demo on free tier — pre-record and replay via the UI's
-  read-only mode (see spec 10).
+- **Free tier**: pass `--tier free` (rpm=4 — one below the 5 RPM ceiling
+  for safety margin; see spec 02 §"Tier presets"). Each iteration takes
+  ~4 minutes; do not attempt a live demo on free tier — pre-record and
+  replay via the UI's read-only mode (see spec 10).
 
 ## Pitch (60 seconds)
 

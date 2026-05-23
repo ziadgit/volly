@@ -713,7 +713,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         "--rpm",
         type=int,
         default=None,
-        help="cap Gemini requests per minute (default: GEMINI_RPM env, else 30; set 5 for free tier)",
+        help="cap Gemini requests per minute (default: GEMINI_RPM env, else 30; for free tier use --tier free which sets rpm=4, one below the 5 RPM ceiling for safety margin)",
     )
     parser.add_argument(
         "--max-retry-wait",

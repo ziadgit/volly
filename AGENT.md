@@ -480,3 +480,18 @@ volly/
   commentary ("recognizability is the gate; detail/shading is what
   separates 0.6 from 0.9") is editorial — deliberately NOT in the prompt,
   which says equal-weighting per the spec system-prompt text.
+- **Free-tier preset is `rpm=4`, intentionally NOT 5.** Gemini Flash 3.5's
+  actual free-tier ceiling is 5 RPM (see specs/00-overview.md §"Rate-limit
+  constraints", specs/03-gemini-client.md §"Rate limiting"), but the
+  `--tier free` bundle in `volly/loop.py:_TIER_PRESETS` sets `rpm=4` —
+  one below the ceiling as a safety margin against client/server clock
+  drift and jitter-induced bursts that would otherwise trip a 429. Spec 02
+  §"Tier presets" carries the explanation in prose; if you change the
+  preset value, update the spec paragraph and all four narrative
+  recommendations (specs/00-overview.md lines 73-74 and 82,
+  specs/03-gemini-client.md line 94-98, specs/02-loop.md line 67,
+  `volly/loop.py:716` argparse help) in lockstep so the next reader doesn't
+  see a 4-vs-5 contradiction. Operators who want to hit the ceiling
+  exactly can override: `--tier free --rpm 5`. Loop_test
+  `test_main_passes_rpm_to_gemini_client` uses `--rpm 5` as a plumbing
+  fixture — unrelated to the recommendation.

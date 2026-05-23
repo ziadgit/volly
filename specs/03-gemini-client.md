@@ -93,7 +93,9 @@ calls as they want.
   is refused.
 - `rpm` resolution at construction time:
   `arg → GEMINI_RPM env → 30 (default)`. `30` suits paid tier without
-  surprises; free-tier operators pass `--rpm 5` on the CLI.
+  surprises; free-tier operators use `--tier free` on the loop CLI,
+  which sets rpm=4 — one below the 5 RPM Gemini ceiling as a safety
+  margin against burst/clock drift (see spec 02 §"Tier presets").
 
 ### 429 handling
 
