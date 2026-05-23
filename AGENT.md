@@ -108,3 +108,11 @@ volly/
   `asyncio.gather` swallows them by design. Each surviving `Candidate`
   carries its original dispatch `index` (0..k-1), so an index gap means
   that slot failed. The loop is expected to pad from prior best.
+- `volly.judge.rank` never raises on a malformed model response — on
+  persistent `ValidationError` from `GeminiClient.json` it logs a warning
+  and returns a uniform fallback `JudgeResult` (all scores `0.5`, empty
+  `prompt_suggestions`). The loop should read a flat-0.5 iteration as a
+  judge degradation signal, not a real plateau. `HistoryEntry` is defined
+  in `judge.py` (not `state.py`) so the judge stays independent of state;
+  `volly.state.RunHistory` will project its records into `HistoryEntry`
+  when wired.

@@ -10,7 +10,7 @@ Format: `- [ ] P0/P1/P2 — <what> — spec: <path>`
 - [x] P0 — Implement `volly/gemini_client.py` — async wrapper for Gemini Flash 3.5 with thinking-level control (Low/Medium/High), JSON-mode helper, multimodal helper — spec: specs/03-gemini-client.md
 - [x] P0 — Implement `volly/renderer.py` — ASCII text → PNG via PIL, fixed canvas, monospace font, black-on-white — spec: specs/05-renderer.md
 - [x] P0 — Implement `volly/actor.py` — generate N candidates in parallel via `asyncio.gather` at Low thinking — spec: specs/04-actor.md
-- [ ] P0 — Implement `volly/judge.py` — multimodal call: subject + N rendered images + current prompt → ranking with per-candidate scores + critique + suggested prompt deltas — spec: specs/06-judge.md
+- [x] P0 — Implement `volly/judge.py` — multimodal call: subject + N rendered images + current prompt → ranking with per-candidate scores + critique + suggested prompt deltas — spec: specs/06-judge.md
 - [ ] P0 — Implement `volly/rewriter.py` — current prompt + judge critique → new prompt, at High thinking — spec: specs/07-rewriter.md
 - [ ] P0 — Implement `volly/state.py` — `IterationState`, `RunHistory`, win-rate metric, prompt diffs, JSON persistence — spec: specs/08-state.md
 - [ ] P0 — Implement `volly/loop.py` — orchestrate generate→render→judge→rewrite, run evolving arm + static control arm side-by-side — spec: specs/02-loop.md
